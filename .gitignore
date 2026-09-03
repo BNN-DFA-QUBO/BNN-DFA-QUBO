@@ -86,3 +86,4 @@ htmlcov/
 .env
 .env.*
 !.env.example
+bnn_dfa_qubo.egg-info
