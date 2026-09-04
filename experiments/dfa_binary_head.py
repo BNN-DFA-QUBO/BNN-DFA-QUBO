@@ -187,7 +187,10 @@ def collect_hidden_features(
             )
 
     H = torch.cat(features)
-    labels = torch.cat(labels_all)
+
+    labels = torch.cat(
+        labels_all
+    )
 
     return H, labels
 
@@ -204,7 +207,10 @@ def fit_least_squares(
 
     H = H.float()
 
+    # --------------------------------------------------------
     # Add bias
+    # --------------------------------------------------------
+
     bias = torch.ones(
         H.size(0),
         1,
@@ -216,17 +222,18 @@ def fit_least_squares(
         dim=1
     )
 
+    # --------------------------------------------------------
     # One-hot targets
+    # --------------------------------------------------------
+
     Y = F.one_hot(
         labels,
         num_classes=num_classes
     ).float()
 
-    # Solve:
-    #
-    # H_aug W = Y
-    #
-    # W shape = 129 x 10
+    # --------------------------------------------------------
+    # Least-squares solution
+    # --------------------------------------------------------
 
     W = torch.linalg.lstsq(
         H_aug,
@@ -234,6 +241,84 @@ def fit_least_squares(
     ).solution
 
     return W
+
+
+# ============================================================
+# EVALUATE REAL-VALUED LS HEAD
+# ============================================================
+
+def evaluate_ls_head(
+    model,
+    classifier,
+    test_loader,
+    device
+):
+
+    model.eval()
+
+    correct = 0
+    total = 0
+
+    classifier = classifier.to(device)
+
+    with torch.no_grad():
+
+        for images, labels in test_loader:
+
+            images = images.to(device)
+            labels = labels.to(device)
+
+            # ------------------------------------------------
+            # Hidden representation
+            # ------------------------------------------------
+
+            x = torch.flatten(
+                images,
+                start_dim=1
+            )
+
+            hidden = model.fc1(x)
+
+            hidden = torch.relu(hidden)
+
+            # ------------------------------------------------
+            # Add bias column
+            # ------------------------------------------------
+
+            bias_column = torch.ones(
+                hidden.size(0),
+                1,
+                device=device
+            )
+
+            hidden_aug = torch.cat(
+                [hidden, bias_column],
+                dim=1
+            )
+
+            # ------------------------------------------------
+            # LS classifier
+            # ------------------------------------------------
+
+            outputs = (
+                hidden_aug @ classifier
+            )
+
+            predictions = (
+                outputs.argmax(dim=1)
+            )
+
+            correct += (
+                predictions == labels
+            ).sum().item()
+
+            total += labels.size(0)
+
+    accuracy = (
+        100.0 * correct / total
+    )
+
+    return accuracy
 
 
 # ============================================================
@@ -255,7 +340,10 @@ def binarize_classifier(
 
     real_bias = classifier[-1, :]
 
+    # --------------------------------------------------------
     # Binary weights
+    # --------------------------------------------------------
+
     binary_weights = real_weights.sign()
 
     # --------------------------------------------------------
@@ -293,7 +381,10 @@ def binarize_classifier(
                 dtype=prediction.dtype
             )
 
+        # ----------------------------------------------------
         # Keep positive scale by flipping direction
+        # ----------------------------------------------------
+
         if scale < 0:
 
             binary_weights[:, class_id] *= -1
@@ -302,7 +393,9 @@ def binarize_classifier(
 
         scales.append(scale)
 
-    scales = torch.stack(scales)
+    scales = torch.stack(
+        scales
+    )
 
     return (
         binary_weights,
@@ -327,21 +420,21 @@ def evaluate_binary_head(
     model.eval()
 
     binary_weights = (
-        binary_weights
-        .to(device)
+        binary_weights.to(device)
     )
 
     scales = (
-        scales
-        .to(device)
+        scales.to(device)
     )
 
     bias = (
-        bias
-        .to(device)
+        bias.to(device)
     )
 
+    # --------------------------------------------------------
     # Apply class-specific scales
+    # --------------------------------------------------------
+
     effective_weights = (
         binary_weights
         * scales.unsqueeze(0)
@@ -385,9 +478,11 @@ def evaluate_binary_head(
 
             total += labels.size(0)
 
-    return (
+    accuracy = (
         100.0 * correct / total
     )
+
+    return accuracy
 
 
 # ============================================================
@@ -566,6 +661,26 @@ if __name__ == "__main__":
     ).float()
 
     # --------------------------------------------------------
+    # Evaluate REAL-VALUED LS head
+    # --------------------------------------------------------
+
+    print(
+        "\nEvaluating real-valued LS classifier..."
+    )
+
+    ls_test_accuracy = evaluate_ls_head(
+        model,
+        classifier,
+        test_loader,
+        device
+    )
+
+    print(
+        f"Real-Valued LS Test Accuracy: "
+        f"{ls_test_accuracy:.2f}%"
+    )
+
+    # --------------------------------------------------------
     # Binarize LS classifier
     # --------------------------------------------------------
 
@@ -622,7 +737,7 @@ if __name__ == "__main__":
     )
 
     # --------------------------------------------------------
-    # Test
+    # Test binary head
     # --------------------------------------------------------
 
     print(
@@ -640,17 +755,27 @@ if __name__ == "__main__":
         )
     )
 
+    print(
+        f"Binary Head Test Accuracy: "
+        f"{binary_test_accuracy:.2f}%"
+    )
+
     # --------------------------------------------------------
-    # Final result
+    # Final comparison
     # --------------------------------------------------------
+
+    difference_from_ls = (
+        binary_test_accuracy
+        - ls_test_accuracy
+    )
 
     print(
         "\n=========================================="
     )
 
     print(
-        "BNN + DFA + Real-Valued LS Head: "
-        "94.05%"
+        f"BNN + DFA + Real-Valued LS Head: "
+        f"{ls_test_accuracy:.2f}%"
     )
 
     print(
@@ -660,7 +785,7 @@ if __name__ == "__main__":
 
     print(
         f"Difference from LS: "
-        f"{binary_test_accuracy - 94.05:+.2f} "
+        f"{difference_from_ls:+.2f} "
         f"percentage points"
     )
 

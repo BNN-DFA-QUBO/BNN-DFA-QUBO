@@ -7,6 +7,10 @@ from utils.data import get_mnist_loaders
 from utils.seed import set_seed
 
 
+# ============================================================
+# BNN + DFA TRAINING
+# ============================================================
+
 def train_dfa(
     model,
     dfa,
@@ -16,7 +20,10 @@ def train_dfa(
     device
 ):
     """
-    Train BNN using Direct Feedback Alignment.
+    Train the BNN using Direct Feedback Alignment (DFA).
+
+    The output error is propagated directly to the hidden
+    layer through a fixed random feedback matrix.
     """
 
     model.train()
@@ -32,10 +39,11 @@ def train_dfa(
 
         optimizer.zero_grad()
 
-        x = torch.flatten(
-            images,
-            start_dim=1
-        )
+        # ----------------------------------------------------
+        # Forward pass
+        # ----------------------------------------------------
+
+        x = torch.flatten(images, start_dim=1)
 
         # Hidden layer
         hidden = model.fc1(x)
@@ -44,70 +52,62 @@ def train_dfa(
         # Output layer
         outputs = model.fc2(hidden_relu)
 
-        loss = criterion(
+        # Loss for monitoring
+        loss = criterion(outputs, labels)
+
+        # ----------------------------------------------------
+        # DFA output error
+        # ----------------------------------------------------
+
+        output_error = DFAFunction.output_error(
             outputs,
             labels
         )
 
-        # ------------------------------------------
-        # DFA output error
-        # ------------------------------------------
-
-        output_error = (
-            DFAFunction.output_error(
-                outputs,
-                labels
-            )
-        )
-
-        # ------------------------------------------
+        # ----------------------------------------------------
         # Output layer gradients
-        # ------------------------------------------
+        # ----------------------------------------------------
 
         grad_output_weight = (
-            output_error.T
-            @ hidden_relu
+            output_error.T @ hidden_relu
         )
 
         grad_output_bias = (
             output_error.sum(dim=0)
         )
 
-        # ------------------------------------------
-        # DFA hidden-layer error
-        # ------------------------------------------
+        # ----------------------------------------------------
+        # Direct Feedback Alignment
+        # ----------------------------------------------------
 
-        hidden_error = (
-            dfa.hidden_gradient(
-                output_error
-            )
+        hidden_error = dfa.hidden_gradient(
+            output_error
         )
 
+        # ReLU derivative
         relu_derivative = (
             hidden > 0
         ).float()
 
         hidden_error = (
-            hidden_error
-            * relu_derivative
+            hidden_error * relu_derivative
         )
 
-        # ------------------------------------------
+        # ----------------------------------------------------
         # Hidden layer gradients
-        # ------------------------------------------
+        # ----------------------------------------------------
 
         grad_hidden_weight = (
-            hidden_error.T
-            @ x
+            hidden_error.T @ x
         )
 
         grad_hidden_bias = (
             hidden_error.sum(dim=0)
         )
 
-        # ------------------------------------------
-        # Assign gradients
-        # ------------------------------------------
+        # ----------------------------------------------------
+        # Manually assign gradients
+        # ----------------------------------------------------
 
         model.fc1.weight.grad = (
             grad_hidden_weight
@@ -125,11 +125,15 @@ def train_dfa(
             grad_output_bias
         )
 
+        # ----------------------------------------------------
+        # Update parameters
+        # ----------------------------------------------------
+
         optimizer.step()
 
-        # ------------------------------------------
+        # ----------------------------------------------------
         # Statistics
-        # ------------------------------------------
+        # ----------------------------------------------------
 
         total_loss += loss.item()
 
@@ -141,11 +145,80 @@ def train_dfa(
 
         total += labels.size(0)
 
-    return (
-        total_loss / len(train_loader),
+    average_loss = (
+        total_loss / len(train_loader)
+    )
+
+    accuracy = (
         100.0 * correct / total
     )
 
+    return average_loss, accuracy
+
+
+# ============================================================
+# EVALUATE ORIGINAL BNN + DFA MODEL
+# ============================================================
+
+def evaluate_dfa_model(
+    model,
+    test_loader,
+    criterion,
+    device
+):
+    """
+    Evaluate the original trained BNN + DFA classifier.
+
+    This is important because the LS experiment must compare
+    its new head against the actual BNN + DFA model produced
+    during the same run.
+    """
+
+    model.eval()
+
+    total_loss = 0.0
+    correct = 0
+    total = 0
+
+    with torch.no_grad():
+
+        for images, labels in test_loader:
+
+            images = images.to(device)
+            labels = labels.to(device)
+
+            # Forward pass through original BNN
+            outputs = model(images)
+
+            loss = criterion(
+                outputs,
+                labels
+            )
+
+            total_loss += loss.item()
+
+            predictions = outputs.argmax(dim=1)
+
+            correct += (
+                predictions == labels
+            ).sum().item()
+
+            total += labels.size(0)
+
+    average_loss = (
+        total_loss / len(test_loader)
+    )
+
+    accuracy = (
+        100.0 * correct / total
+    )
+
+    return average_loss, accuracy
+
+
+# ============================================================
+# COLLECT HIDDEN REPRESENTATIONS
+# ============================================================
 
 def collect_hidden_features(
     model,
@@ -153,12 +226,15 @@ def collect_hidden_features(
     device
 ):
     """
-    Collect hidden representations.
+    Collect hidden representations from the trained BNN.
 
-    Returns:
+    Returns
+    -------
+    H:
+        Hidden feature matrix.
 
-        H      : hidden features
-        labels : corresponding MNIST labels
+    labels:
+        Corresponding labels.
     """
 
     model.eval()
@@ -172,15 +248,18 @@ def collect_hidden_features(
 
             images = images.to(device)
 
+            # Flatten input
             x = torch.flatten(
                 images,
                 start_dim=1
             )
 
+            # Hidden representation
             hidden = model.fc1(x)
 
             hidden = torch.relu(hidden)
 
+            # Move to CPU to reduce MPS memory usage
             features.append(
                 hidden.cpu()
             )
@@ -190,10 +269,17 @@ def collect_hidden_features(
             )
 
     H = torch.cat(features)
-    labels = torch.cat(labels_all)
+
+    labels = torch.cat(
+        labels_all
+    )
 
     return H, labels
 
+
+# ============================================================
+# FIT LEAST-SQUARES CLASSIFIER
+# ============================================================
 
 def fit_least_squares_classifier(
     H,
@@ -201,21 +287,24 @@ def fit_least_squares_classifier(
     num_classes=10
 ):
     """
-    Fit a real-valued linear classifier using
-    least squares.
+    Fit a real-valued linear classifier using least squares.
 
     We solve:
 
-        min_W ||H_aug W^T - Y||^2
+        min_W ||H_aug W - Y||²
 
-    where H_aug includes a bias column.
+    where:
+
+        H_aug = [H, 1]
+
+    The final column allows the classifier to learn a bias.
     """
 
     H = H.float()
 
-    # ------------------------------------------
-    # Add bias term
-    # ------------------------------------------
+    # --------------------------------------------------------
+    # Add bias column
+    # --------------------------------------------------------
 
     bias = torch.ones(
         H.size(0),
@@ -228,18 +317,18 @@ def fit_least_squares_classifier(
         dim=1
     )
 
-    # ------------------------------------------
-    # One-hot targets
-    # ------------------------------------------
+    # --------------------------------------------------------
+    # One-hot encode targets
+    # --------------------------------------------------------
 
     Y = F.one_hot(
         labels,
         num_classes=num_classes
     ).float()
 
-    # ------------------------------------------
+    # --------------------------------------------------------
     # Least-squares solution
-    # ------------------------------------------
+    # --------------------------------------------------------
 
     solution = torch.linalg.lstsq(
         H_aug,
@@ -249,6 +338,10 @@ def fit_least_squares_classifier(
     return solution
 
 
+# ============================================================
+# EVALUATE LEAST-SQUARES CLASSIFIER
+# ============================================================
+
 def evaluate_least_squares(
     model,
     classifier,
@@ -256,8 +349,8 @@ def evaluate_least_squares(
     device
 ):
     """
-    Evaluate the least-squares classifier on
-    the test hidden representations.
+    Evaluate the least-squares classifier on the
+    test hidden representations.
     """
 
     model.eval()
@@ -274,9 +367,9 @@ def evaluate_least_squares(
             images = images.to(device)
             labels = labels.to(device)
 
-            # --------------------------------------
+            # ------------------------------------------------
             # Hidden representation
-            # --------------------------------------
+            # ------------------------------------------------
 
             x = torch.flatten(
                 images,
@@ -287,9 +380,9 @@ def evaluate_least_squares(
 
             hidden = torch.relu(hidden)
 
-            # --------------------------------------
+            # ------------------------------------------------
             # Add bias
-            # --------------------------------------
+            # ------------------------------------------------
 
             bias = torch.ones(
                 hidden.size(0),
@@ -302,9 +395,9 @@ def evaluate_least_squares(
                 dim=1
             )
 
-            # --------------------------------------
-            # Linear classifier
-            # --------------------------------------
+            # ------------------------------------------------
+            # LS classifier
+            # ------------------------------------------------
 
             outputs = (
                 hidden_aug @ classifier
@@ -320,8 +413,16 @@ def evaluate_least_squares(
 
             total += labels.size(0)
 
-    return 100.0 * correct / total
+    accuracy = (
+        100.0 * correct / total
+    )
 
+    return accuracy
+
+
+# ============================================================
+# TRAINING-SET FIT OF LS CLASSIFIER
+# ============================================================
 
 def evaluate_training_fit(
     H,
@@ -329,12 +430,13 @@ def evaluate_training_fit(
     classifier
 ):
     """
-    Evaluate the least-squares classifier on the
-    training representation.
+    Evaluate the LS classifier on the same training
+    representation used to fit it.
     """
 
     H = H.float()
 
+    # Add bias
     bias = torch.ones(
         H.size(0),
         1,
@@ -346,6 +448,7 @@ def evaluate_training_fit(
         dim=1
     )
 
+    # Classifier output
     outputs = (
         H_aug @ classifier
     )
@@ -361,17 +464,21 @@ def evaluate_training_fit(
     return accuracy
 
 
+# ============================================================
+# MAIN
+# ============================================================
+
 if __name__ == "__main__":
 
-    # ==================================================
+    # ========================================================
     # Reproducibility
-    # ==================================================
+    # ========================================================
 
     set_seed(42)
 
-    # ==================================================
+    # ========================================================
     # Device
-    # ==================================================
+    # ========================================================
 
     device = torch.device(
         "mps"
@@ -386,9 +493,9 @@ if __name__ == "__main__":
         device
     )
 
-    # ==================================================
+    # ========================================================
     # Dataset
-    # ==================================================
+    # ========================================================
 
     train_loader, test_loader = (
         get_mnist_loaders(
@@ -396,30 +503,34 @@ if __name__ == "__main__":
         )
     )
 
-    # ==================================================
+    # ========================================================
     # Model
-    # ==================================================
+    # ========================================================
 
     model = BNN().to(device)
 
+    # DFA feedback matrix
     dfa = DFAClassifier(
         hidden_size=128,
         output_size=10,
         device=device
     )
 
+    # Loss
     criterion = torch.nn.CrossEntropyLoss()
 
+    # Optimizer
     optimizer = torch.optim.Adam(
         model.parameters(),
         lr=0.001
     )
 
+    # Number of epochs
     epochs = 5
 
-    # ==================================================
+    # ========================================================
     # Train BNN + DFA
-    # ==================================================
+    # ========================================================
 
     print(
         "\nTraining BNN + DFA...\n"
@@ -429,26 +540,51 @@ if __name__ == "__main__":
 
         train_loss, train_accuracy = (
             train_dfa(
-                model,
-                dfa,
-                train_loader,
-                optimizer,
-                criterion,
-                device
+                model=model,
+                dfa=dfa,
+                train_loader=train_loader,
+                optimizer=optimizer,
+                criterion=criterion,
+                device=device
             )
         )
 
         print(
             f"Epoch {epoch + 1}/{epochs} | "
-            f"Train Loss: "
-            f"{train_loss:.4f} | "
-            f"Train Accuracy: "
-            f"{train_accuracy:.2f}%"
+            f"Train Loss: {train_loss:.4f} | "
+            f"Train Accuracy: {train_accuracy:.2f}%"
         )
 
-    # ==================================================
-    # Collect hidden representation
-    # ==================================================
+    # ========================================================
+    # Evaluate ORIGINAL BNN + DFA
+    # ========================================================
+
+    print(
+        "\nEvaluating original BNN + DFA model..."
+    )
+
+    dfa_test_loss, dfa_test_accuracy = (
+        evaluate_dfa_model(
+            model=model,
+            test_loader=test_loader,
+            criterion=criterion,
+            device=device
+        )
+    )
+
+    print(
+        f"BNN + DFA Test Loss: "
+        f"{dfa_test_loss:.4f}"
+    )
+
+    print(
+        f"BNN + DFA Test Accuracy: "
+        f"{dfa_test_accuracy:.2f}%"
+    )
+
+    # ========================================================
+    # Collect hidden representations
+    # ========================================================
 
     print(
         "\nCollecting hidden representations..."
@@ -456,9 +592,9 @@ if __name__ == "__main__":
 
     H_train, y_train = (
         collect_hidden_features(
-            model,
-            train_loader,
-            device
+            model=model,
+            loader=train_loader,
+            device=device
         )
     )
 
@@ -467,19 +603,18 @@ if __name__ == "__main__":
         H_train.shape
     )
 
-    # ==================================================
-    # Fit least-squares classifier
-    # ==================================================
+    # ========================================================
+    # Fit LS classifier
+    # ========================================================
 
     print(
-        "\nFitting real-valued least-squares "
-        "classifier..."
+        "\nFitting real-valued least-squares classifier..."
     )
 
     classifier = (
         fit_least_squares_classifier(
-            H_train,
-            y_train,
+            H=H_train,
+            labels=y_train,
             num_classes=10
         )
     )
@@ -489,15 +624,15 @@ if __name__ == "__main__":
         classifier.shape
     )
 
-    # ==================================================
-    # Training representation accuracy
-    # ==================================================
+    # ========================================================
+    # Training accuracy of LS head
+    # ========================================================
 
     train_ls_accuracy = (
         evaluate_training_fit(
-            H_train,
-            y_train,
-            classifier
+            H=H_train,
+            labels=y_train,
+            classifier=classifier
         )
     )
 
@@ -506,9 +641,9 @@ if __name__ == "__main__":
         f"{train_ls_accuracy:.2f}%"
     )
 
-    # ==================================================
-    # Test accuracy
-    # ==================================================
+    # ========================================================
+    # Test accuracy of LS head
+    # ========================================================
 
     print(
         "\nEvaluating least-squares classifier..."
@@ -516,10 +651,10 @@ if __name__ == "__main__":
 
     test_ls_accuracy = (
         evaluate_least_squares(
-            model,
-            classifier,
-            test_loader,
-            device
+            model=model,
+            classifier=classifier,
+            test_loader=test_loader,
+            device=device
         )
     )
 
@@ -528,17 +663,22 @@ if __name__ == "__main__":
         f"{test_ls_accuracy:.2f}%"
     )
 
-    # ==================================================
-    # Comparison
-    # ==================================================
+    # ========================================================
+    # Final comparison
+    # ========================================================
+
+    difference = (
+        test_ls_accuracy
+        - dfa_test_accuracy
+    )
 
     print(
         "\n=========================================="
     )
 
     print(
-        f"BNN + DFA Test Accuracy: "
-        f"93.62%"
+        f"BNN + DFA: "
+        f"{dfa_test_accuracy:.2f}%"
     )
 
     print(
@@ -548,8 +688,7 @@ if __name__ == "__main__":
 
     print(
         f"Difference: "
-        f"{test_ls_accuracy - 93.62:+.2f} "
-        f"percentage points"
+        f"{difference:+.2f} percentage points"
     )
 
     print(
