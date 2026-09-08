@@ -9,6 +9,8 @@ compare standard neural networks, BNNs trained with backpropagation,
 BNNs trained using DFA, different binary classifier heads, and finally a
 QUBO/Ising classifier optimized using simulated annealing.
 
+Procedure to run the project:
+
 1. Clone
 
 git clone https://github.com/BNN-DFA-QUBO/BNN-DFA-QUBO.git
