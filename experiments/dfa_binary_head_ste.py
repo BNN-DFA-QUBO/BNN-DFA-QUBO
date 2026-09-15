@@ -322,7 +322,7 @@ if __name__ == "__main__":
 
     print("\nTraining BNN + DFA...")
 
-    for epoch in range(5):
+    for epoch in range(16):
 
         train_loss, train_accuracy = train_dfa(
             model,
@@ -333,7 +333,7 @@ if __name__ == "__main__":
         )
 
         print(
-            f"Epoch {epoch + 1}/5 | "
+            f"Epoch {epoch + 1}/16 | "
             f"Train Loss: {train_loss:.4f} | "
             f"Train Accuracy: "
             f"{train_accuracy:.2f}%"

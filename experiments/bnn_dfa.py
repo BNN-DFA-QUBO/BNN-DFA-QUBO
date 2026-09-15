@@ -162,7 +162,7 @@ if __name__ == "__main__":
         lr=0.001
     )
 
-    epochs = 5
+    epochs = 16
 
     print("\nTraining BNN + DFA...\n")
 

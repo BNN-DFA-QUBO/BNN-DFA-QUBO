@@ -428,7 +428,7 @@ if __name__ == "__main__":
         lr=0.001
     )
 
-    for epoch in range(5):
+    for epoch in range(16):
 
         loss, accuracy = train_dfa(
             model,
@@ -439,7 +439,7 @@ if __name__ == "__main__":
         )
 
         print(
-            f"Epoch {epoch + 1}/5 | "
+            f"Epoch {epoch + 1}/16 | "
             f"Train Loss: {loss:.4f} | "
             f"Train Accuracy: "
             f"{accuracy:.2f}%"

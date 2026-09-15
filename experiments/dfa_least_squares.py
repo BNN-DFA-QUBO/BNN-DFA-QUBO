@@ -526,7 +526,7 @@ if __name__ == "__main__":
     )
 
     # Number of epochs
-    epochs = 5
+    epochs = 16
 
     # ========================================================
     # Train BNN + DFA

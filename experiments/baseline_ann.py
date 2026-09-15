@@ -107,7 +107,7 @@ if __name__ == "__main__":
 
     optimizer = optim.Adam(model.parameters(), lr=0.001)
 
-    epochs = 5
+    epochs = 16
 
     for epoch in range(epochs):
 
