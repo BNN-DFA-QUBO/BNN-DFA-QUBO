@@ -99,20 +99,6 @@ python -m experiments.bnn_dfa_qubo
 The repository includes a separate reproducibility layer for comparing
 experiments across platforms such as NVIDIA CUDA, Apple MPS, and CPU.
 
-The protocol fixes:
-
-Random seed (42)
-
-Training sample order for every one of the 16 training epochs
-
-Test sample order
-
-Dataset sizes and protocol metadata
-
-The reproducibility layer does not modify the existing files in
-experiments/ or models/. Instead, it runs the original experiments through
-a protocol-controlled data loader.
-
 7.1 Verify the protocol
 
 Before running the experiments, verify that the protocol is complete and
