@@ -94,12 +94,71 @@ python -m experiments.dfa_direct_binary_head
 python -m experiments.dfa_binary_head_ste
 python -m experiments.bnn_dfa_qubo
 
+7. Cross-platform reproducibility protocol
+
+The repository includes a separate reproducibility layer for comparing
+experiments across platforms such as NVIDIA CUDA, Apple MPS, and CPU.
+
+The protocol fixes:
+
+Random seed (42)
+
+Training sample order for every one of the 16 training epochs
+
+Test sample order
+
+Dataset sizes and protocol metadata
+
+The reproducibility layer does not modify the existing files in
+experiments/ or models/. Instead, it runs the original experiments through
+a protocol-controlled data loader.
+
+7.1 Verify the protocol
+
+Before running the experiments, verify that the protocol is complete and
+valid:
+
+python -m reproducibility.verify_protocol
+
+The verification checks the manifest, test indices, and every training
+epoch permutation.
+
+7.2 Run an experiment with the reproducibility protocol
+
+python -m reproducibility.runner baseline_ann
+python -m reproducibility.runner bnn_bp
+python -m reproducibility.runner bnn_dfa
+python -m reproducibility.runner dfa_least_squares
+python -m reproducibility.runner dfa_binary_head
+python -m reproducibility.runner dfa_direct_binary_head
+python -m reproducibility.runner dfa_binary_head_ste
+python -m reproducibility.runner bnn_dfa_qubo
+
+The purpose of this procedure is to isolate platform-dependent numerical
+differences by controlling the experimental inputs and training order.
+It does not guarantee bit-for-bit identical training results across
+different hardware backends. Small numerical differences can still occur
+because CUDA, MPS, and CPU use different kernels and floating-point
+execution paths.
+
+
 Project structure
 
 BNN-DFA-QUBO/
 ├── experiments/
 ├── models/
 ├── utils/
+├── reproducibility/
+│   ├── deterministic.py
+│   ├── fixed_data.py
+│   ├── generate_protocol.py
+│   ├── protocol_loader.py
+│   ├── runner.py
+│   └── verify_protocol.py
+├── protocol/
+│   ├── manifest.json
+│   ├── test_indices.npy
+│   └── train/
 ├── data/
 ├── pyproject.toml
 ├── requirements.txt
