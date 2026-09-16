@@ -4,8 +4,7 @@ import torch.nn.functional as F
 from models.bnn import BNN
 from models.dfa import DFAClassifier, DFAFunction
 from utils.data import get_mnist_loaders
-from utils.seed import set_seed
-
+from utils.seed_testing import set_test_seed
 
 # ============================================================
 # BNN + DFA TRAINING
@@ -474,12 +473,11 @@ if __name__ == "__main__":
     # Reproducibility
     # ========================================================
 
-    set_seed(42)
+    set_test_seed(42)
 
     # ========================================================
     # Device
     # ========================================================
-
     device = torch.device(
         "mps"
         if torch.backends.mps.is_available()
