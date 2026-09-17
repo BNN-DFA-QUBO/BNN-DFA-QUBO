@@ -94,6 +94,19 @@ python -m experiments.dfa_direct_binary_head
 python -m experiments.dfa_binary_head_ste
 python -m experiments.bnn_dfa_qubo
 
+
+To run an experiment with a specific seed:
+
+python -m experiments.baseline_ann --seed 123
+python -m experiments.bnn_bp --seed 123
+python -m experiments.bnn_dfa --seed 123
+python -m experiments.dfa_least_squares --seed 123
+python -m experiments.dfa_binary_head --seed 123
+python -m experiments.dfa_direct_binary_head --seed 123
+python -m experiments.dfa_binary_head_ste --seed 123
+python -m experiments.bnn_dfa_qubo --seed 123
+
+
 7. Cross-platform reproducibility protocol
 
 The repository includes a separate reproducibility layer for comparing
