@@ -200,7 +200,8 @@ def optimize_binary_class(
     H,
     target,
     alpha,
-    num_reads=100
+    num_reads=100,
+    seed=None
 ):
     """
     Optimize one binary classifier using simulated annealing.
@@ -219,7 +220,8 @@ def optimize_binary_class(
     response = sampler.sample_ising(
         h,
         J,
-        num_reads=num_reads
+        num_reads=num_reads,
+        seed=seed
     )
 
     best_sample = (
@@ -244,7 +246,8 @@ def optimize_binary_classifier(
     targets,
     scales,
     num_classes=10,
-    num_reads=100
+    num_reads=100,
+    seed=None
 ):
     """
     Optimize one binary classifier per class.
@@ -289,7 +292,8 @@ def optimize_binary_classifier(
             H=H,
             target=target,
             alpha=alpha,
-            num_reads=num_reads
+            num_reads=num_reads,
+            seed=seed
         )
 
         binary_weights[
