@@ -1,5 +1,6 @@
 import argparse
 import runpy
+import sys
 from pathlib import Path
 from unittest.mock import patch
 
@@ -19,7 +20,9 @@ def run_experiment(experiment_name):
     experiment_path = EXPERIMENTS_DIR / f"{experiment_name}.py"
 
     if not experiment_path.exists():
-        available = sorted(p.stem for p in EXPERIMENTS_DIR.glob("*.py"))
+        available = sorted(
+            p.stem for p in EXPERIMENTS_DIR.glob("*.py")
+        )
         raise FileNotFoundError(
             f"Experiment not found: {experiment_path}\n"
             f"Available experiments: {', '.join(available)}"
@@ -60,14 +63,29 @@ def run_experiment(experiment_name):
     print("[REPRO] Running original experiment without modifying it.")
     print()
 
-    with patch(
-        "utils.data.get_mnist_loaders",
-        new=protocol_get_mnist_loaders,
-    ):
-        runpy.run_path(
+    # The experiment now accepts --seed through get_seed().
+    # Replace sys.argv temporarily so that the experiment receives
+    # the reproducibility protocol's seed rather than the runner's arguments.
+    original_argv = sys.argv
+
+    try:
+        sys.argv = [
             str(experiment_path),
-            run_name="__main__",
-        )
+            "--seed",
+            str(seed),
+        ]
+
+        with patch(
+            "utils.data.get_mnist_loaders",
+            new=protocol_get_mnist_loaders,
+        ):
+            runpy.run_path(
+                str(experiment_path),
+                run_name="__main__",
+            )
+
+    finally:
+        sys.argv = original_argv
 
     print()
     print("[REPRO] =============================================")
@@ -77,12 +95,17 @@ def run_experiment(experiment_name):
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Run an existing experiment with the fixed reproducibility protocol."
+        description=(
+            "Run an existing experiment with the fixed "
+            "reproducibility protocol."
+        )
     )
+
     parser.add_argument(
         "experiment",
         help="Experiment filename without .py, e.g. bnn_dfa_qubo",
     )
+
     args = parser.parse_args()
 
     run_experiment(args.experiment)

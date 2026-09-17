@@ -1,28 +1,22 @@
-import random
-import numpy as np
 import torch
 
+from utils.seed import set_seed
 
-SEED = 42
+
+DEFAULT_SEED = 42
 
 
-def set_deterministic(seed=SEED):
+def set_deterministic(seed=DEFAULT_SEED):
+    """
+    Configure deterministic/reproducible execution.
 
-    # Python random
-    random.seed(seed)
+    This builds on the normal project-wide seed function
+    and additionally enables deterministic CUDA/cuDNN behavior.
+    """
 
-    # NumPy random
-    np.random.seed(seed)
+    set_seed(seed)
 
-    # PyTorch random
-    torch.manual_seed(seed)
-
-    # CUDA random
     if torch.cuda.is_available():
-        torch.cuda.manual_seed(seed)
-        torch.cuda.manual_seed_all(seed)
-
-        # Make CUDA/cuDNN operations as deterministic as possible
         torch.backends.cudnn.deterministic = True
         torch.backends.cudnn.benchmark = False
 
