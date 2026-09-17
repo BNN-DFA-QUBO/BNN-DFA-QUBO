@@ -4,7 +4,7 @@ import torch.nn.functional as F
 from models.bnn import BNN
 from models.dfa import DFAClassifier, DFAFunction
 from utils.data import get_mnist_loaders
-from utils.seed import set_seed
+from utils.seed import set_seed, get_seed
 
 
 def train_dfa(model, train_loader, optimizer, dfa, device):
@@ -254,7 +254,10 @@ def evaluate_binary_head(
 
 if __name__ == "__main__":
 
-    set_seed(42)
+    seed = get_seed()
+    set_seed(seed)
+
+    print(f"Using seed: {seed}")
 
     device = torch.device(
         "mps"

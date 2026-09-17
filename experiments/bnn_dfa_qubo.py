@@ -8,7 +8,7 @@ from models.qubo_head import (
     optimize_binary_classifier
 )
 from utils.data import get_mnist_loaders
-from utils.seed import set_seed
+from utils.seed import set_seed, get_seed
 
 
 # ============================================================
@@ -374,7 +374,10 @@ if __name__ == "__main__":
     # Seed
     # --------------------------------------------------------
 
-    set_seed(42)
+    seed = get_seed()
+    set_seed(seed)
+
+    print(f"Using seed: {seed}")
 
     # --------------------------------------------------------
     # Device
@@ -538,7 +541,8 @@ if __name__ == "__main__":
             targets=targets,
             scales=qubo_scales,
             num_classes=10,
-            num_reads=100
+            num_reads=100,
+            seed=seed
         )
     )
 

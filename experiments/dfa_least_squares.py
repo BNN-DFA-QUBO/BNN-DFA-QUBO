@@ -4,7 +4,7 @@ import torch.nn.functional as F
 from models.bnn import BNN
 from models.dfa import DFAClassifier, DFAFunction
 from utils.data import get_mnist_loaders
-from utils.seed_testing import set_test_seed
+from utils.seed import set_seed, get_seed
 
 # ============================================================
 # BNN + DFA TRAINING
@@ -473,7 +473,10 @@ if __name__ == "__main__":
     # Reproducibility
     # ========================================================
 
-    set_test_seed(42)
+    seed = get_seed()
+    set_seed(seed)
+
+    print(f"Using seed: {seed}")
 
     # ========================================================
     # Device

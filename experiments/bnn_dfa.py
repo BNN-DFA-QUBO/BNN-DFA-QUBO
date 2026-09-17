@@ -5,7 +5,7 @@ import torch.optim as optim
 from models.bnn import BNN
 from models.dfa import DFAClassifier, DFAFunction
 from utils.data import get_mnist_loaders
-from utils.seed_testing import set_test_seed
+from utils.seed import set_seed, get_seed
 
 
 def train(model, train_loader, optimizer, criterion, dfa):
@@ -101,7 +101,10 @@ def test(model, test_loader, criterion):
 
 
 def main():
-    set_test_seed(42)
+    seed = get_seed()
+    set_seed(seed)
+
+    print(f"Using seed: {seed}")
 
     if torch.backends.mps.is_available():
         device = torch.device("mps")

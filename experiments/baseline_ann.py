@@ -3,6 +3,7 @@ import torch.nn as nn
 import torch.optim as optim
 
 from utils.data import get_mnist_loaders
+from utils.seed import set_seed, get_seed
 
 
 class BaselineANN(nn.Module):
@@ -96,6 +97,11 @@ if __name__ == "__main__":
         else "cuda" if torch.cuda.is_available()
         else "cpu"
     )
+
+    seed = get_seed()
+    set_seed(seed)
+
+    print(f"Using seed: {seed}")
 
     print("Using device:", device)
 

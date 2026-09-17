@@ -1,4 +1,4 @@
-from utils.seed import set_seed
+from utils.seed import set_seed, get_seed
 import torch
 import torch.nn as nn
 import torch.optim as optim
@@ -77,7 +77,10 @@ def test(model, test_loader, criterion, device):
 
 if __name__ == "__main__":
 
-    set_seed(42)
+    seed = get_seed()
+    set_seed(seed)
+
+    print(f"Using seed: {seed}")
     
     device = torch.device(
         "mps" if torch.backends.mps.is_available()
