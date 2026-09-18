@@ -3,8 +3,8 @@ import torch.nn.functional as F
 
 from models.bnn import BNN
 from models.dfa import DFAClassifier, DFAFunction
-from utils.data import get_mnist_loaders
-from utils.seed import set_seed, get_seed
+from utils.MNIST.data import get_mnist_loaders
+from utils.MNIST.seed import set_seed, get_seed
 
 
 def binary_ste(w):

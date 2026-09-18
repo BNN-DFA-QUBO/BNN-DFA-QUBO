@@ -1,17 +1,32 @@
-from utils.seed import set_seed, get_seed
 import torch
 import torch.nn as nn
 import torch.optim as optim
 
-from models.bnn import BNN
-from utils.data import get_mnist_loaders
+from utils.MNIST.data import get_mnist_loaders
+from utils.MNIST.seed import set_seed, get_seed
+
+
+class BaselineANN(nn.Module):
+
+    def __init__(self):
+        super().__init__()
+
+        self.network = nn.Sequential(
+            nn.Flatten(),
+            nn.Linear(28 * 28, 128),
+            nn.ReLU(),
+            nn.Linear(128, 10)
+        )
+
+    def forward(self, x):
+        return self.network(x)
 
 
 def train(model, train_loader, optimizer, criterion, device):
 
     model.train()
 
-    total_loss = 0.0
+    total_loss = 0
     correct = 0
     total = 0
 
@@ -37,8 +52,8 @@ def train(model, train_loader, optimizer, criterion, device):
         correct += (predictions == labels).sum().item()
         total += labels.size(0)
 
+    accuracy = 100 * correct / total
     average_loss = total_loss / len(train_loader)
-    accuracy = 100.0 * correct / total
 
     return average_loss, accuracy
 
@@ -47,7 +62,7 @@ def test(model, test_loader, criterion, device):
 
     model.eval()
 
-    total_loss = 0.0
+    total_loss = 0
     correct = 0
     total = 0
 
@@ -69,43 +84,36 @@ def test(model, test_loader, criterion, device):
             correct += (predictions == labels).sum().item()
             total += labels.size(0)
 
+    accuracy = 100 * correct / total
     average_loss = total_loss / len(test_loader)
-    accuracy = 100.0 * correct / total
 
     return average_loss, accuracy
 
 
 if __name__ == "__main__":
 
-    seed = get_seed()
-    set_seed(seed)
-
-    print(f"Using seed: {seed}")
-    
     device = torch.device(
         "mps" if torch.backends.mps.is_available()
         else "cuda" if torch.cuda.is_available()
         else "cpu"
     )
 
+    seed = get_seed()
+    set_seed(seed)
+
+    print(f"Using seed: {seed}")
+
     print("Using device:", device)
 
-    train_loader, test_loader = get_mnist_loaders(
-        batch_size=64
-    )
+    train_loader, test_loader = get_mnist_loaders(batch_size=64)
 
-    model = BNN().to(device)
+    model = BaselineANN().to(device)
 
     criterion = nn.CrossEntropyLoss()
 
-    optimizer = optim.Adam(
-        model.parameters(),
-        lr=0.001
-    )
+    optimizer = optim.Adam(model.parameters(), lr=0.001)
 
     epochs = 16
-
-    print("\nTraining BNN + Backpropagation...\n")
 
     for epoch in range(epochs):
 
@@ -128,6 +136,5 @@ if __name__ == "__main__":
             f"Epoch {epoch + 1}/{epochs} | "
             f"Train Loss: {train_loss:.4f} | "
             f"Train Accuracy: {train_accuracy:.2f}% | "
-            f"Test Loss: {test_loss:.4f} | "
             f"Test Accuracy: {test_accuracy:.2f}%"
         )

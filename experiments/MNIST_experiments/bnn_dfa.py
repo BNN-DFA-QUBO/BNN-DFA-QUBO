@@ -4,8 +4,8 @@ import torch.optim as optim
 
 from models.bnn import BNN
 from models.dfa import DFAClassifier, DFAFunction
-from utils.data import get_mnist_loaders
-from utils.seed import set_seed, get_seed
+from utils.MNIST.data import get_mnist_loaders
+from utils.MNIST.seed import set_seed, get_seed
 
 
 def train(model, train_loader, optimizer, criterion, dfa):

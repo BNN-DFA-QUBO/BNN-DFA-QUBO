@@ -1,6 +1,6 @@
 import torch
 
-from utils.seed import set_seed
+from utils.MNIST.seed import set_seed
 
 
 DEFAULT_SEED = 42

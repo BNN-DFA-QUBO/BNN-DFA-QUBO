@@ -7,8 +7,8 @@ from models.qubo_head import (
     calculate_ls_scales,
     optimize_binary_classifier
 )
-from utils.data import get_mnist_loaders
-from utils.seed import set_seed, get_seed
+from utils.MNIST.data import get_mnist_loaders
+from utils.MNIST.seed import set_seed, get_seed
 
 
 # ============================================================

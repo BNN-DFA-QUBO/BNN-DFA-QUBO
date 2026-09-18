@@ -1,4 +1,4 @@
-from utils.data import get_mnist_loaders
+from utils.MNIST.data import get_mnist_loaders
 
 
 train_loader, test_loader = get_mnist_loaders(batch_size=64)

@@ -75,12 +75,12 @@ class ProtocolSampler(Sampler):
 
 
 def build_protocol_loaders(
-    original_get_mnist_loaders,
+    original_get_loaders,
     protocol_dir,
     batch_size=64,
 ):
     """Build protocol-controlled loaders while preserving the original datasets/transforms."""
-    original_train_loader, original_test_loader = original_get_mnist_loaders(
+    original_train_loader, original_test_loader = original_get_loaders(
         batch_size=batch_size
     )
 

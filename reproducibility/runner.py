@@ -12,20 +12,24 @@ from reproducibility.protocol_loader import (
 
 
 ROOT = Path(__file__).resolve().parent.parent
-EXPERIMENTS_DIR = ROOT / "experiments"
+
+MNIST_EXPERIMENTS_DIR = ROOT / "experiments" / "MNIST_experiments"
 PROTOCOL_DIR = ROOT / "protocol"
 
 
 def run_experiment(experiment_name):
-    experiment_path = EXPERIMENTS_DIR / f"{experiment_name}.py"
+    experiment_path = MNIST_EXPERIMENTS_DIR / f"{experiment_name}.py"
 
     if not experiment_path.exists():
         available = sorted(
-            p.stem for p in EXPERIMENTS_DIR.glob("*.py")
+            p.stem
+            for p in MNIST_EXPERIMENTS_DIR.glob("*.py")
+            if p.name != "__init__.py"
         )
+
         raise FileNotFoundError(
             f"Experiment not found: {experiment_path}\n"
-            f"Available experiments: {', '.join(available)}"
+            f"Available MNIST experiments: {', '.join(available)}"
         )
 
     manifest = load_manifest(PROTOCOL_DIR)
@@ -42,20 +46,19 @@ def run_experiment(experiment_name):
     print(f"[REPRO] Epochs     : {manifest['num_epochs']}")
     print()
 
-    # Import the original utility only here. The experiment itself remains
-    # unchanged; its `from utils.data import get_mnist_loaders` will receive
-    # the patched function when runpy executes it.
-    import utils.data
+    # Import the MNIST loader used by the MNIST experiments.
+    import utils.MNIST.data
 
-    original_get_mnist_loaders = utils.data.get_mnist_loaders
+    original_get_loaders = utils.MNIST.data.get_mnist_loaders
 
-    def protocol_get_mnist_loaders(batch_size=64):
+    def protocol_get_loaders(batch_size=64):
         print(
             f"[REPRO] Replacing get_mnist_loaders(batch_size={batch_size}) "
             "with protocol-controlled loaders"
         )
+
         return build_protocol_loaders(
-            original_get_mnist_loaders=original_get_mnist_loaders,
+            original_get_loaders=original_get_loaders,
             protocol_dir=PROTOCOL_DIR,
             batch_size=batch_size,
         )
@@ -63,9 +66,7 @@ def run_experiment(experiment_name):
     print("[REPRO] Running original experiment without modifying it.")
     print()
 
-    # The experiment now accepts --seed through get_seed().
-    # Replace sys.argv temporarily so that the experiment receives
-    # the reproducibility protocol's seed rather than the runner's arguments.
+    # Give the experiment the protocol's seed through --seed.
     original_argv = sys.argv
 
     try:
@@ -76,8 +77,8 @@ def run_experiment(experiment_name):
         ]
 
         with patch(
-            "utils.data.get_mnist_loaders",
-            new=protocol_get_mnist_loaders,
+            "utils.MNIST.data.get_mnist_loaders",
+            new=protocol_get_loaders,
         ):
             runpy.run_path(
                 str(experiment_path),
@@ -96,14 +97,14 @@ def run_experiment(experiment_name):
 def main():
     parser = argparse.ArgumentParser(
         description=(
-            "Run an existing experiment with the fixed "
+            "Run an MNIST experiment with the fixed "
             "reproducibility protocol."
         )
     )
 
     parser.add_argument(
         "experiment",
-        help="Experiment filename without .py, e.g. bnn_dfa_qubo",
+        help="MNIST experiment filename without .py, e.g. bnn_dfa_qubo",
     )
 
     args = parser.parse_args()
