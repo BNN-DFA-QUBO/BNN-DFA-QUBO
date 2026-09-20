@@ -1,133 +1,115 @@
+"""Plot cross-platform reproducibility results.
+
+Run:
+    python reproducibility/plot_reproducibility.py
+
+Input:
+    data/results/reproducibility_results.csv
+"""
+
+from pathlib import Path
 import pandas as pd
 import matplotlib.pyplot as plt
-from pathlib import Path
+import numpy as np
 
 
 ROOT = Path(__file__).resolve().parents[1]
-RESULTS_PATH = ROOT / "data" / "reproducibility_results.csv"
-OUTPUT_DIR = ROOT / "data" / "reproducibility_results"
+INPUT = ROOT / "data" / "results" / "reproducibility_results.csv"
+OUT = ROOT / "data" / "results" / "reproducibility_figures"
 
 
-def load_results():
-    if not RESULTS_PATH.exists():
+def main():
+    if not INPUT.exists():
         raise FileNotFoundError(
-            f"Missing results file: {RESULTS_PATH}\n"
-            "Run the reproducibility experiments first."
+            f"{INPUT} does not exist. Record at least two platform runs first."
         )
-    return pd.read_csv(RESULTS_PATH)
 
+    df = pd.read_csv(INPUT)
+    df["test_accuracy"] = pd.to_numeric(df["test_accuracy"], errors="coerce")
 
-def save_summary(df):
+    OUT.mkdir(parents=True, exist_ok=True)
+
+    # Platform-wise accuracy comparison.
     summary = (
-        df.groupby(["experiment", "method", "platform"])["test_accuracy"]
-        .agg(["mean", "std", "min", "max"])
-        .reset_index()
-    )
-    path = OUTPUT_DIR / "reproducibility_summary.csv"
-    summary.to_csv(path, index=False)
-    print(f"Saved: {path}")
-    return summary
-
-
-def plot_platform_means(df):
-    summary = (
-        df.groupby(["method", "platform"])["test_accuracy"]
+        df.groupby(["experiment", "platform"])["test_accuracy"]
         .agg(["mean", "std"])
         .reset_index()
     )
 
-    pivot = summary.pivot(index="method", columns="platform", values="mean")
-    ax = pivot.plot(kind="bar", figsize=(12, 6))
-    ax.set_ylabel("Test Accuracy (%)")
-    ax.set_xlabel("Method")
-    ax.set_title("MNIST Reproducibility — Mean Test Accuracy by Platform")
-    ax.set_ylim(0, 100)
-    plt.xticks(rotation=25, ha="right")
-    plt.legend(title="Platform")
-    plt.tight_layout()
-
-    path = OUTPUT_DIR / "platform_mean_accuracy.png"
-    plt.savefig(path, dpi=300, bbox_inches="tight")
-    plt.close()
-    print(f"Saved: {path}")
-
-
-def plot_platform_spread(df):
-    # For each experiment/seed, compare platforms against the first
-    # available platform for that exact seed. This is descriptive only:
-    # it visualizes numerical divergence, not a "winner".
-    pivot = df.pivot_table(
-        index=["experiment", "method", "seed"],
+    pivot = summary.pivot(
+        index="experiment",
         columns="platform",
-        values="test_accuracy",
-        aggfunc="mean",
+        values="mean",
     )
 
-    platforms = list(pivot.columns)
-    if len(platforms) < 2:
-        print("Skipping platform spread plot: fewer than two platforms recorded.")
-        return
-
-    reference = platforms[0]
-    delta = pivot.subtract(pivot[reference], axis=0).drop(columns=[reference])
-    delta = delta.reset_index()
-
-    ax = delta.set_index("method").plot(
-        kind="box",
-        figsize=(12, 6),
-    )
-    ax.axhline(0, linewidth=1)
-    ax.set_ylabel(f"Accuracy difference vs {reference} (percentage points)")
-    ax.set_title("MNIST Reproducibility — Cross-Platform Accuracy Differences")
-    plt.xticks(rotation=25, ha="right")
+    ax = pivot.plot(kind="bar", figsize=(11, 6))
+    ax.set_ylabel("Test accuracy (%)")
+    ax.set_xlabel("Experiment")
+    ax.set_title("Cross-platform reproducibility")
+    ax.set_ylim(0, 100)
+    ax.tick_params(axis="x", rotation=25)
+    ax.legend(title="Platform")
     plt.tight_layout()
-
-    path = OUTPUT_DIR / "cross_platform_accuracy_difference.png"
-    plt.savefig(path, dpi=300, bbox_inches="tight")
+    plt.savefig(
+        OUT / "platform_accuracy_comparison.png",
+        dpi=300,
+        bbox_inches="tight",
+    )
     plt.close()
-    print(f"Saved: {path}")
 
+    # Exact-seed differences between platforms.
+    platforms = list(df["platform"].dropna().unique())
 
-def plot_per_seed(df):
-    # One figure per experiment keeps the platform comparison readable.
-    for experiment, group in df.groupby("experiment"):
-        pivot = group.pivot(
-            index="seed",
+    if len(platforms) >= 2:
+        reference = platforms[0]
+
+        pivot_seed = df.pivot_table(
+            index=["experiment", "seed"],
             columns="platform",
             values="test_accuracy",
+            aggfunc="mean",
         )
 
-        ax = pivot.plot(
-            kind="bar",
-            figsize=(9, 5),
-        )
-        ax.set_ylabel("Test Accuracy (%)")
-        ax.set_xlabel("Seed")
-        ax.set_title(
-            f"Reproducibility Across Platforms — {group['method'].iloc[0]}"
-        )
-        ax.set_ylim(0, 100)
-        plt.xticks(rotation=0)
-        plt.legend(title="Platform")
-        plt.tight_layout()
+        other_platforms = [p for p in platforms if p != reference]
 
-        path = OUTPUT_DIR / f"{experiment}_per_seed_platform.png"
-        plt.savefig(path, dpi=300, bbox_inches="tight")
-        plt.close()
-        print(f"Saved: {path}")
+        for platform in other_platforms:
+            if reference not in pivot_seed.columns or platform not in pivot_seed.columns:
+                continue
 
+            difference = (
+                pivot_seed[platform] - pivot_seed[reference]
+            ).dropna()
 
-def main():
-    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-    df = load_results()
+            fig, ax = plt.subplots(figsize=(10, 5))
+            ax.bar(np.arange(len(difference)), difference.values)
+            ax.axhline(0, linewidth=1)
+            ax.set_xlabel("Experiment / seed")
+            ax.set_ylabel(
+                f"Accuracy difference: {platform} − {reference} "
+                "(percentage points)"
+            )
+            ax.set_title("Cross-platform accuracy difference")
+            ax.set_xticks(range(len(difference)))
+            ax.set_xticklabels(
+                [f"{idx[0]} / seed {idx[1]}" for idx in difference.index],
+                rotation=45,
+                ha="right",
+            )
+            fig.tight_layout()
+            fig.savefig(
+                OUT / f"accuracy_difference_{platform}_vs_{reference}.png",
+                dpi=300,
+                bbox_inches="tight",
+            )
+            plt.close(fig)
 
-    print(f"Loaded {len(df)} reproducibility results.")
-    save_summary(df)
-    plot_platform_means(df)
-    plot_platform_spread(df)
-    plot_per_seed(df)
+    # Numerical summary.
+    summary.to_csv(
+        OUT / "reproducibility_summary.csv",
+        index=False,
+    )
 
-    print("\nReproducibility plots generated successfully.")
+    print(f"Saved reproducibility figures to {OUT}")
 
 
 if __name__ == "__main__":

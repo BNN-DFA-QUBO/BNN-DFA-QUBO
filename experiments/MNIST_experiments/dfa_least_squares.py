@@ -6,6 +6,12 @@ from models.dfa import DFAClassifier, DFAFunction
 from utils.MNIST.data import get_mnist_loaders
 from utils.MNIST.seed import set_seed, get_seed
 
+from experiments.MNIST_experiments.results_utils import (
+    append_result,
+    Timer,
+    count_parameters,
+)
+
 # ============================================================
 # BNN + DFA TRAINING
 # ============================================================
@@ -467,20 +473,25 @@ def evaluate_training_fit(
 # MAIN
 # ============================================================
 
-if __name__ == "__main__":
 
-    # ========================================================
-    # Reproducibility
-    # ========================================================
+    append_result(
+        experiment="dfa_least_squares",
+        method="BNN + DFA + Real-Valued LS Head",
+        seed=seed,
+        test_accuracy=test_accuracy,
+        test_loss=test_loss if "test_loss" in locals() else None,
+        training_time_sec=training_timer.seconds if "training_timer" in locals() else None,
+        parameter_count=count_parameters(model),
+    )
+
+
+if __name__ == "__main__":
 
     seed = get_seed()
     set_seed(seed)
 
     print(f"Using seed: {seed}")
 
-    # ========================================================
-    # Device
-    # ========================================================
     device = torch.device(
         "mps"
         if torch.backends.mps.is_available()
@@ -489,58 +500,32 @@ if __name__ == "__main__":
         else "cpu"
     )
 
-    print(
-        "Using device:",
-        device
-    )
+    print("Using device:", device)
 
-    # ========================================================
-    # Dataset
-    # ========================================================
-
-    train_loader, test_loader = (
-        get_mnist_loaders(
-            batch_size=64
-        )
-    )
-
-    # ========================================================
-    # Model
-    # ========================================================
+    train_loader, test_loader = get_mnist_loaders(batch_size=64)
 
     model = BNN().to(device)
 
-    # DFA feedback matrix
     dfa = DFAClassifier(
         hidden_size=128,
         output_size=10,
         device=device
     )
 
-    # Loss
     criterion = torch.nn.CrossEntropyLoss()
 
-    # Optimizer
     optimizer = torch.optim.Adam(
         model.parameters(),
         lr=0.001
     )
 
-    # Number of epochs
     epochs = 16
 
-    # ========================================================
-    # Train BNN + DFA
-    # ========================================================
+    print("\nTraining BNN + DFA...\n")
 
-    print(
-        "\nTraining BNN + DFA...\n"
-    )
-
-    for epoch in range(epochs):
-
-        train_loss, train_accuracy = (
-            train_dfa(
+    with Timer() as training_timer:
+        for epoch in range(epochs):
+            train_loss, train_accuracy = train_dfa(
                 model=model,
                 dfa=dfa,
                 train_loader=train_loader,
@@ -548,93 +533,51 @@ if __name__ == "__main__":
                 criterion=criterion,
                 device=device
             )
-        )
 
-        print(
-            f"Epoch {epoch + 1}/{epochs} | "
-            f"Train Loss: {train_loss:.4f} | "
-            f"Train Accuracy: {train_accuracy:.2f}%"
-        )
+            print(
+                f"Epoch {epoch + 1}/{epochs} | "
+                f"Train Loss: {train_loss:.4f} | "
+                f"Train Accuracy: {train_accuracy:.2f}%"
+            )
 
-    # ========================================================
-    # Evaluate ORIGINAL BNN + DFA
-    # ========================================================
-
-    print(
-        "\nEvaluating original BNN + DFA model..."
-    )
-
-    dfa_test_loss, dfa_test_accuracy = (
-        evaluate_dfa_model(
-            model=model,
-            test_loader=test_loader,
-            criterion=criterion,
-            device=device
-        )
+    dfa_test_loss, dfa_test_accuracy = evaluate_dfa_model(
+        model=model,
+        test_loader=test_loader,
+        criterion=criterion,
+        device=device
     )
 
     print(
-        f"BNN + DFA Test Loss: "
-        f"{dfa_test_loss:.4f}"
+        f"\nBNN + DFA Test Loss: {dfa_test_loss:.4f}"
     )
-
     print(
-        f"BNN + DFA Test Accuracy: "
-        f"{dfa_test_accuracy:.2f}%"
+        f"BNN + DFA Test Accuracy: {dfa_test_accuracy:.2f}%"
     )
 
-    # ========================================================
-    # Collect hidden representations
-    # ========================================================
+    print("\nCollecting hidden representations...")
 
-    print(
-        "\nCollecting hidden representations..."
+    H_train, y_train = collect_hidden_features(
+        model=model,
+        loader=train_loader,
+        device=device
     )
 
-    H_train, y_train = (
-        collect_hidden_features(
-            model=model,
-            loader=train_loader,
-            device=device
-        )
+    print("Training hidden feature shape:", H_train.shape)
+
+    print("\nFitting real-valued least-squares classifier...")
+
+    classifier = fit_least_squares_classifier(
+        H=H_train,
+        labels=y_train,
+        num_classes=10
     )
 
-    print(
-        "Training hidden feature shape:",
-        H_train.shape
-    )
+    print("Least-squares classifier shape:", classifier.shape)
 
-    # ========================================================
-    # Fit LS classifier
-    # ========================================================
-
-    print(
-        "\nFitting real-valued least-squares classifier..."
-    )
-
-    classifier = (
-        fit_least_squares_classifier(
-            H=H_train,
-            labels=y_train,
-            num_classes=10
-        )
-    )
-
-    print(
-        "Least-squares classifier shape:",
-        classifier.shape
-    )
-
-    # ========================================================
-    # Training accuracy of LS head
-    # ========================================================
-
-    train_ls_accuracy = (
-        evaluate_training_fit(
-            H=H_train,
-            labels=y_train,
-            classifier=classifier
-        )
+    train_ls_accuracy = evaluate_training_fit(
+        H=H_train,
+        labels=y_train,
+        classifier=classifier
     )
 
     print(
@@ -642,21 +585,13 @@ if __name__ == "__main__":
         f"{train_ls_accuracy:.2f}%"
     )
 
-    # ========================================================
-    # Test accuracy of LS head
-    # ========================================================
+    print("\nEvaluating least-squares classifier...")
 
-    print(
-        "\nEvaluating least-squares classifier..."
-    )
-
-    test_ls_accuracy = (
-        evaluate_least_squares(
-            model=model,
-            classifier=classifier,
-            test_loader=test_loader,
-            device=device
-        )
+    test_ls_accuracy = evaluate_least_squares(
+        model=model,
+        classifier=classifier,
+        test_loader=test_loader,
+        device=device
     )
 
     print(
@@ -664,34 +599,23 @@ if __name__ == "__main__":
         f"{test_ls_accuracy:.2f}%"
     )
 
-    # ========================================================
-    # Final comparison
-    # ========================================================
+    difference = test_ls_accuracy - dfa_test_accuracy
 
-    difference = (
-        test_ls_accuracy
-        - dfa_test_accuracy
-    )
-
-    print(
-        "\n=========================================="
-    )
-
-    print(
-        f"BNN + DFA: "
-        f"{dfa_test_accuracy:.2f}%"
-    )
-
+    print("\n==========================================")
+    print(f"BNN + DFA: {dfa_test_accuracy:.2f}%")
     print(
         f"BNN + DFA + Real-Valued LS Head: "
         f"{test_ls_accuracy:.2f}%"
     )
+    print(f"Difference: {difference:+.2f} percentage points")
+    print("==========================================")
 
-    print(
-        f"Difference: "
-        f"{difference:+.2f} percentage points"
-    )
-
-    print(
-        "=========================================="
+    append_result(
+        experiment="dfa_least_squares",
+        method="BNN + DFA + Real-Valued LS Head",
+        seed=seed,
+        test_accuracy=test_ls_accuracy,
+        test_loss=None,
+        training_time_sec=training_timer.seconds,
+        parameter_count=count_parameters(model),
     )

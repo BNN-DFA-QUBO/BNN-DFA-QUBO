@@ -6,6 +6,12 @@ from models.dfa import DFAClassifier, DFAFunction
 from utils.MNIST.data import get_mnist_loaders
 from utils.MNIST.seed import set_seed, get_seed
 
+from experiments.MNIST_experiments.results_utils import (
+    append_result,
+    Timer,
+    count_parameters,
+)
+
 
 def binary_ste(w):
     """
@@ -172,46 +178,46 @@ def train_binary_head_ste(
         lr=lr
     )
 
-    for epoch in range(epochs):
+    with Timer() as training_timer:
 
-        optimizer.zero_grad()
+            optimizer.zero_grad()
 
-        # HARD binary weights during forward pass
-        W_binary = binary_ste(
-            latent_weights
-        )
-
-        logits = H @ W_binary + bias
-
-        loss = F.cross_entropy(
-            logits,
-            labels
-        )
-
-        loss.backward()
-
-        optimizer.step()
-
-        if (
-            epoch == 0
-            or (epoch + 1) % 10 == 0
-        ):
-            predictions = logits.argmax(dim=1)
-
-            accuracy = (
-                100.0 *
-                (predictions == labels)
-                .float()
-                .mean()
-                .item()
+            # HARD binary weights during forward pass
+            W_binary = binary_ste(
+                latent_weights
             )
 
-            print(
-                f"Binary Head Epoch "
-                f"{epoch + 1}/{epochs} | "
-                f"Loss: {loss.item():.4f} | "
-                f"Accuracy: {accuracy:.2f}%"
+            logits = H @ W_binary + bias
+
+            loss = F.cross_entropy(
+                logits,
+                labels
             )
+
+            loss.backward()
+
+            optimizer.step()
+
+            if (
+                epoch == 0
+                or (epoch + 1) % 10 == 0
+            ):
+                predictions = logits.argmax(dim=1)
+
+                accuracy = (
+                    100.0 *
+                    (predictions == labels)
+                    .float()
+                    .mean()
+                    .item()
+                )
+
+                print(
+                    f"Binary Head Epoch "
+                    f"{epoch + 1}/{epochs} | "
+                    f"Loss: {loss.item():.4f} | "
+                    f"Accuracy: {accuracy:.2f}%"
+                )
 
     # Final hard binary weights
     with torch.no_grad():
@@ -285,6 +291,18 @@ def evaluate_binary_head(
     return 100.0 * correct / total
 
 
+
+    append_result(
+        experiment="dfa_binary_head_ste",
+        method="BNN + DFA + STE Binary Head",
+        seed=seed,
+        test_accuracy=test_accuracy,
+        test_loss=test_loss if "test_loss" in locals() else None,
+        training_time_sec=training_timer.seconds if "training_timer" in locals() else None,
+        parameter_count=count_parameters(model),
+    )
+
+
 if __name__ == "__main__":
 
     seed = get_seed()
@@ -325,22 +343,23 @@ if __name__ == "__main__":
 
     print("\nTraining BNN + DFA...")
 
-    for epoch in range(16):
+    with Timer() as training_timer:
+        for epoch in range(16):
 
-        train_loss, train_accuracy = train_dfa(
-            model,
-            train_loader,
-            optimizer,
-            dfa,
-            device
-        )
+            train_loss, train_accuracy = train_dfa(
+                model,
+                train_loader,
+                optimizer,
+                dfa,
+                device
+            )
 
-        print(
-            f"Epoch {epoch + 1}/16 | "
-            f"Train Loss: {train_loss:.4f} | "
-            f"Train Accuracy: "
-            f"{train_accuracy:.2f}%"
-        )
+            print(
+                f"Epoch {epoch + 1}/16 | "
+                f"Train Loss: {train_loss:.4f} | "
+                f"Train Accuracy: "
+                f"{train_accuracy:.2f}%"
+            )
 
     # ------------------------------------------
     # STEP 2: Collect DFA representation
@@ -423,3 +442,13 @@ if __name__ == "__main__":
     )
 
     print("==========================================")
+
+    append_result(
+        experiment="dfa_binary_head_ste",
+        method="BNN + DFA + STE Binary Head",
+        seed=seed,
+        test_accuracy=test_accuracy,
+        test_loss=None,
+        training_time_sec=training_timer.seconds,
+        parameter_count=count_parameters(model),
+    )

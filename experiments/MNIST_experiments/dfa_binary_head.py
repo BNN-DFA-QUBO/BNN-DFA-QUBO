@@ -6,6 +6,12 @@ from models.dfa import DFAClassifier, DFAFunction
 from utils.MNIST.data import get_mnist_loaders
 from utils.MNIST.seed import set_seed, get_seed
 
+from experiments.MNIST_experiments.results_utils import (
+    append_result,
+    Timer,
+    count_parameters,
+)
+
 
 # ============================================================
 # DFA TRAINING
@@ -525,6 +531,18 @@ def evaluate_binary_training_fit(
 # MAIN
 # ============================================================
 
+
+    append_result(
+        experiment="dfa_binary_head",
+        method="BNN + DFA + Binarized LS Head",
+        seed=seed,
+        test_accuracy=test_accuracy,
+        test_loss=test_loss if "test_loss" in locals() else None,
+        training_time_sec=training_timer.seconds if "training_timer" in locals() else None,
+        parameter_count=count_parameters(model),
+    )
+
+
 if __name__ == "__main__":
 
     # --------------------------------------------------------
@@ -592,10 +610,9 @@ if __name__ == "__main__":
         "\nTraining BNN + DFA...\n"
     )
 
-    for epoch in range(epochs):
-
-        train_loss, train_accuracy = (
-            train_dfa(
+    with Timer() as training_timer:
+        for epoch in range(epochs):
+            train_loss, train_accuracy = train_dfa(
                 model,
                 dfa,
                 train_loader,
@@ -603,15 +620,12 @@ if __name__ == "__main__":
                 criterion,
                 device
             )
-        )
 
-        print(
-            f"Epoch {epoch + 1}/{epochs} | "
-            f"Train Loss: "
-            f"{train_loss:.4f} | "
-            f"Train Accuracy: "
-            f"{train_accuracy:.2f}%"
-        )
+            print(
+                f"Epoch {epoch + 1}/{epochs} | "
+                f"Train Loss: {train_loss:.4f} | "
+                f"Train Accuracy: {train_accuracy:.2f}%"
+            )
 
     # --------------------------------------------------------
     # Collect hidden representation
@@ -794,4 +808,15 @@ if __name__ == "__main__":
 
     print(
         "=========================================="
+    )
+
+    append_result(
+        experiment="dfa_binary_head",
+        method="BNN + DFA + Binarized LS Head",
+        seed=seed,
+        test_accuracy=binary_test_accuracy,
+        test_loss=None,
+        training_time_sec=training_timer.seconds,
+        parameter_count=count_parameters(model),
+        notes=f"Real-valued LS head accuracy: {ls_test_accuracy:.4f}%",
     )

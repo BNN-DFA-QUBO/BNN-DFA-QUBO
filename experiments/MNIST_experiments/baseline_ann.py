@@ -5,6 +5,11 @@ import torch.optim as optim
 from utils.MNIST.data import get_mnist_loaders
 from utils.MNIST.seed import set_seed, get_seed
 
+from experiments.MNIST_experiments.results_utils import (
+    append_result,
+    Timer,
+    count_parameters,
+)
 
 class BaselineANN(nn.Module):
 
@@ -102,39 +107,45 @@ if __name__ == "__main__":
     set_seed(seed)
 
     print(f"Using seed: {seed}")
-
     print("Using device:", device)
 
     train_loader, test_loader = get_mnist_loaders(batch_size=64)
 
     model = BaselineANN().to(device)
-
     criterion = nn.CrossEntropyLoss()
-
     optimizer = optim.Adam(model.parameters(), lr=0.001)
-
     epochs = 16
 
-    for epoch in range(epochs):
+    with Timer() as training_timer:
+        for epoch in range(epochs):
+            train_loss, train_accuracy = train(
+                model,
+                train_loader,
+                optimizer,
+                criterion,
+                device
+            )
 
-        train_loss, train_accuracy = train(
-            model,
-            train_loader,
-            optimizer,
-            criterion,
-            device
-        )
+            test_loss, test_accuracy = test(
+                model,
+                test_loader,
+                criterion,
+                device
+            )
 
-        test_loss, test_accuracy = test(
-            model,
-            test_loader,
-            criterion,
-            device
-        )
+            print(
+                f"Epoch {epoch + 1}/{epochs} | "
+                f"Train Loss: {train_loss:.4f} | "
+                f"Train Accuracy: {train_accuracy:.2f}% | "
+                f"Test Accuracy: {test_accuracy:.2f}%"
+            )
 
-        print(
-            f"Epoch {epoch + 1}/{epochs} | "
-            f"Train Loss: {train_loss:.4f} | "
-            f"Train Accuracy: {train_accuracy:.2f}% | "
-            f"Test Accuracy: {test_accuracy:.2f}%"
-        )
+    append_result(
+        experiment="baseline_ann",
+        method="Standard ANN",
+        seed=seed,
+        test_accuracy=test_accuracy,
+        test_loss=test_loss,
+        training_time_sec=training_timer.seconds,
+        parameter_count=count_parameters(model),
+    )

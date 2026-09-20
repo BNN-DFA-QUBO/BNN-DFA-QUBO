@@ -7,6 +7,12 @@ from models.dfa import DFAClassifier, DFAFunction
 from utils.MNIST.data import get_mnist_loaders
 from utils.MNIST.seed import set_seed, get_seed
 
+from experiments.MNIST_experiments.results_utils import (
+    append_result,
+    Timer,
+    count_parameters,
+)
+
 
 def train(model, train_loader, optimizer, criterion, dfa):
     model.train()
@@ -115,9 +121,7 @@ def main():
 
     print(f"Using device: {device}")
 
-    train_loader, test_loader = get_mnist_loaders(
-        batch_size=64
-    )
+    train_loader, test_loader = get_mnist_loaders(batch_size=64)
 
     model = BNN().to(device)
 
@@ -138,20 +142,21 @@ def main():
 
     print("\nTraining BNN + DFA...\n")
 
-    for epoch in range(epochs):
-        train_loss, train_accuracy = train(
-            model,
-            train_loader,
-            optimizer,
-            criterion,
-            dfa
-        )
+    with Timer() as training_timer:
+        for epoch in range(epochs):
+            train_loss, train_accuracy = train(
+                model,
+                train_loader,
+                optimizer,
+                criterion,
+                dfa
+            )
 
-        print(
-            f"Epoch {epoch + 1}/{epochs} | "
-            f"Train Loss: {train_loss:.4f} | "
-            f"Train Accuracy: {train_accuracy:.2f}%"
-        )
+            print(
+                f"Epoch {epoch + 1}/{epochs} | "
+                f"Train Loss: {train_loss:.4f} | "
+                f"Train Accuracy: {train_accuracy:.2f}%"
+            )
 
     test_loss, test_accuracy = test(
         model,
@@ -162,6 +167,16 @@ def main():
     print(
         f"\nFinal Test Loss: {test_loss:.4f} | "
         f"Final Test Accuracy: {test_accuracy:.2f}%"
+    )
+
+    append_result(
+        experiment="bnn_dfa",
+        method="BNN + DFA",
+        seed=seed,
+        test_accuracy=test_accuracy,
+        test_loss=test_loss,
+        training_time_sec=training_timer.seconds,
+        parameter_count=count_parameters(model),
     )
 
 

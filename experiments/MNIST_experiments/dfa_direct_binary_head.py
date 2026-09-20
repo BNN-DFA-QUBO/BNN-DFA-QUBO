@@ -6,6 +6,12 @@ from models.dfa import DFAClassifier, DFAFunction
 from utils.MNIST.data import get_mnist_loaders
 from utils.MNIST.seed import set_seed, get_seed
 
+from experiments.MNIST_experiments.results_utils import (
+    append_result,
+    Timer,
+    count_parameters,
+)
+
 
 def train_dfa(model, train_loader, optimizer, dfa, device):
 
@@ -252,6 +258,10 @@ def evaluate_binary_head(
     return 100.0 * correct / total
 
 
+
+    
+
+
 if __name__ == "__main__":
 
     seed = get_seed()
@@ -269,8 +279,8 @@ if __name__ == "__main__":
 
     print("Using device:", device)
 
-    train_loader, test_loader = (
-        get_mnist_loaders(batch_size=64)
+    train_loader, test_loader = get_mnist_loaders(
+        batch_size=64
     )
 
     model = BNN().to(device)
@@ -288,22 +298,30 @@ if __name__ == "__main__":
 
     print("\nTraining BNN + DFA...")
 
-    for epoch in range(16):
+    # Time the complete 16-epoch training process
+    with Timer() as training_timer:
 
-        train_loss, train_accuracy = train_dfa(
-            model,
-            train_loader,
-            optimizer,
-            dfa,
-            device
-        )
+        for epoch in range(16):
 
-        print(
-            f"Epoch {epoch + 1}/16 | "
-            f"Train Loss: {train_loss:.4f} | "
-            f"Train Accuracy: "
-            f"{train_accuracy:.2f}%"
-        )
+            train_loss, train_accuracy = train_dfa(
+                model,
+                train_loader,
+                optimizer,
+                dfa,
+                device
+            )
+
+            print(
+                f"Epoch {epoch + 1}/16 | "
+                f"Train Loss: {train_loss:.4f} | "
+                f"Train Accuracy: "
+                f"{train_accuracy:.2f}%"
+            )
+
+    print(
+        f"\nTraining time: "
+        f"{training_timer.seconds:.2f} seconds"
+    )
 
     print("\nCollecting hidden representations...")
 
@@ -326,7 +344,7 @@ if __name__ == "__main__":
     (
         binary_weights,
         bias,
-        train_accuracy
+        head_train_accuracy
     ) = optimize_binary_head(
         H_train,
         y_train,
@@ -348,7 +366,7 @@ if __name__ == "__main__":
     print(
         f"\nDirect Binary Head "
         f"Training Accuracy: "
-        f"{train_accuracy:.2f}%"
+        f"{head_train_accuracy:.2f}%"
     )
 
     print(
@@ -373,3 +391,14 @@ if __name__ == "__main__":
     )
 
     print("==========================================")
+
+    # Record result for Results & Analysis
+    append_result(
+        experiment="dfa_direct_binary_head",
+        method="BNN + DFA + Direct Binary Head",
+        seed=seed,
+        test_accuracy=test_accuracy,
+        test_loss=None,
+        training_time_sec=training_timer.seconds,
+        parameter_count=count_parameters(model),
+    )

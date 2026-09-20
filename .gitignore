@@ -87,3 +87,6 @@ htmlcov/
 .env.*
 !.env.example
 bnn_dfa_qubo.egg-info
+
+HOW_TO_COPY_AND_RUN.md
+README_RESULTS_PATCH.md

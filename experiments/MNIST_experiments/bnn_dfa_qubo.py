@@ -10,6 +10,12 @@ from models.qubo_head import (
 from utils.MNIST.data import get_mnist_loaders
 from utils.MNIST.seed import set_seed, get_seed
 
+from experiments.MNIST_experiments.results_utils import (
+    append_result,
+    Timer,
+    count_parameters,
+)
+
 
 # ============================================================
 # TRAIN BNN + DFA
@@ -368,6 +374,19 @@ def evaluate_qubo_head(
 # MAIN
 # ============================================================
 
+
+    append_result(
+        experiment="bnn_dfa_qubo",
+        method="BNN + DFA + QUBO",
+        seed=seed,
+        test_accuracy=test_accuracy,
+        test_loss=test_loss if "test_loss" in locals() else None,
+        training_time_sec=training_timer.seconds if "training_timer" in locals() else None,
+        parameter_count=count_parameters(model),
+        qubo_time_sec=qubo_timer.seconds if "qubo_timer" in locals() else None,
+    )
+
+
 if __name__ == "__main__":
 
     # --------------------------------------------------------
@@ -431,22 +450,23 @@ if __name__ == "__main__":
         lr=0.001
     )
 
-    for epoch in range(16):
+    with Timer() as training_timer:
+        for epoch in range(16):
 
-        loss, accuracy = train_dfa(
-            model,
-            train_loader,
-            optimizer,
-            dfa,
-            device
-        )
+            loss, accuracy = train_dfa(
+                model,
+                train_loader,
+                optimizer,
+                dfa,
+                device
+            )
 
-        print(
-            f"Epoch {epoch + 1}/16 | "
-            f"Train Loss: {loss:.4f} | "
-            f"Train Accuracy: "
-            f"{accuracy:.2f}%"
-        )
+            print(
+                f"Epoch {epoch + 1}/16 | "
+                f"Train Loss: {loss:.4f} | "
+                f"Train Accuracy: "
+                f"{accuracy:.2f}%"
+            )
 
     # ========================================================
     # STEP 2
@@ -535,8 +555,8 @@ if __name__ == "__main__":
         "Optimizing binary classifier using QUBO..."
     )
 
-    binary_weights = (
-        optimize_binary_classifier(
+    with Timer() as qubo_timer:
+        binary_weights = optimize_binary_classifier(
             H=H_train,
             targets=targets,
             scales=qubo_scales,
@@ -544,7 +564,6 @@ if __name__ == "__main__":
             num_reads=100,
             seed=seed
         )
-    )
 
     # ========================================================
     # VERIFY BINARY WEIGHTS
@@ -645,4 +664,15 @@ if __name__ == "__main__":
 
     print(
         "=========================================="
+    )
+
+    append_result(
+        experiment="bnn_dfa_qubo",
+        method="BNN + DFA + QUBO",
+        seed=seed,
+        test_accuracy=test_accuracy,
+        test_loss=None,
+        training_time_sec=training_timer.seconds,
+        parameter_count=count_parameters(model),
+        qubo_time_sec=qubo_timer.seconds,
     )
