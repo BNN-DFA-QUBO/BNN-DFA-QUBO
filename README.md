@@ -84,15 +84,15 @@ python -m experiments.bnn_dfa_qubo
 
 6. Recommended order
 
-python -m experiments.test_data
-python -m experiments.baseline_ann
-python -m experiments.bnn_bp
-python -m experiments.bnn_dfa
-python -m experiments.dfa_least_squares
-python -m experiments.dfa_binary_head
-python -m experiments.dfa_direct_binary_head
-python -m experiments.dfa_binary_head_ste
-python -m experiments.bnn_dfa_qubo
+python -m experiments.MNIST_experiments.test_data
+python -m experiments.MNIST_experiments.baseline_ann
+python -m experiments.MNIST_experiments.bnn_bp
+python -m experiments.MNIST_experiments.bnn_dfa
+python -m experiments.MNIST_experiments.dfa_least_squares
+python -m experiments.MNIST_experiments.dfa_binary_head
+python -m experiments.MNIST_experiments.dfa_direct_binary_head
+python -m experiments.MNIST_experiments.dfa_binary_head_ste
+python -m experiments.MNIST_experiments.bnn_dfa_qubo
 
 
 To run an experiment with a specific seed:
