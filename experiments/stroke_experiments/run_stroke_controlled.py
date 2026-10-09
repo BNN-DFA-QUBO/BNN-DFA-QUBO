@@ -22,6 +22,46 @@ from experiments.stroke_experiments.stroke_dfa_qubo import train_qubo
 
 RESULTS_PATH = DATA_DIR.parent / "stroke_controlled_results.csv"
 
+# These describe the established controlled-comparison implementations; they do
+# not imply that every head optimizes the same objective.
+CONTROLLED_METHOD_METADATA = {
+    "Real LS": {
+        "method_variant": "continuous_least_squares",
+        "objective": "squared residual error",
+        "target_encoding": "stroke labels {0,1}",
+        "bias_treatment": "intercept fitted jointly with weights by least squares",
+        "optimization_procedure": "numpy.linalg.lstsq closed-form fit; validation-selected threshold",
+    },
+    "Binarized LS": {
+        "method_variant": "least_squares_fit_then_binary_weights",
+        "objective": "squared residual error before weight sign binarization",
+        "target_encoding": "stroke labels {0,1}",
+        "bias_treatment": "continuous least-squares intercept retained",
+        "optimization_procedure": "numpy.linalg.lstsq, sign-binarize weights, validation-selected threshold",
+    },
+    "Direct Binary": {
+        "method_variant": "class_mean_sign_direction",
+        "objective": "no loss optimization; sign of positive-minus-negative training mean",
+        "target_encoding": "stroke labels {0,1} define the two class means",
+        "bias_treatment": "fixed at zero",
+        "optimization_procedure": "analytic class means then validation-selected threshold",
+    },
+    "STE Binary": {
+        "method_variant": "ste_signed_target_mse",
+        "objective": "mean squared error on signed targets {-1,+1}",
+        "target_encoding": "stroke 0 -> -1; stroke 1 -> +1",
+        "bias_treatment": "learned scalar bias",
+        "optimization_procedure": "Adam with straight-through sign-binarized weights; validation-selected threshold",
+    },
+    "QUBO Binary": {
+        "method_variant": "qubo_signed_target_squared_error",
+        "objective": "QUBO squared error on signed targets {-1,+1}",
+        "target_encoding": "stroke 0 -> -1; stroke 1 -> +1",
+        "bias_treatment": "recovered as the training residual offset",
+        "optimization_procedure": "simulated-annealing Ising search over binary weights; validation-selected threshold",
+    },
+}
+
 
 def run_experiments(seeds=None, split_seed=SPLIT_SEED, balancing_method=BALANCING_METHOD, overwrite=False,
                     output_dir=DATA_DIR):
@@ -74,7 +114,7 @@ def run_experiments(seeds=None, split_seed=SPLIT_SEED, balancing_method=BALANCIN
 
         save_representation(
             dfa_result,
-        str(representation_path),
+            str(representation_path),
             feature_names=dfa_result["feature_names"]
         )
 
@@ -134,6 +174,7 @@ def run_experiments(seeds=None, split_seed=SPLIT_SEED, balancing_method=BALANCIN
                 )
 
             result["method"] = method_name
+            result["experiment_type"] = "controlled_end_to_end_head_comparison"
             result["seed"] = seed
             result["model_seed"] = seed
             result["training_seed"] = seed
@@ -144,13 +185,8 @@ def run_experiments(seeds=None, split_seed=SPLIT_SEED, balancing_method=BALANCIN
             result["dataset_sha256"] = preprocessing_metadata["dataset_sha256"]
             result["balancing_method"] = preprocessing_metadata["balancing_method"]
             result["head_seed"] = result.get("head_seed", "")
-            result["loss_configuration"] = {
-                "Real LS": "least squares with {0,1} targets and intercept",
-                "Binarized LS": "least squares with {0,1} targets; binarize coefficients",
-                "Direct Binary": "mean-difference direction; validation threshold",
-                "STE Binary": "unweighted BCEWithLogitsLoss on balanced representations",
-                "QUBO Binary": "QUBO squared error with {-1,+1} targets",
-            }[method_name]
+            result.update(CONTROLLED_METHOD_METADATA[method_name])
+            result["loss_configuration"] = CONTROLLED_METHOD_METADATA[method_name]["objective"]
             result["split_class_counts"] = json.dumps({
                 "train_original": preprocessing_metadata["original_train_class_counts"],
                 "train_resampled": preprocessing_metadata["resampled_train_class_counts"],
@@ -209,7 +245,9 @@ def save_results(results, results_path=None):
     results_path = RESULTS_PATH if results_path is None else Path(results_path)
 
     fieldnames = [
+        "experiment_type",
         "method",
+        "method_variant",
         "seed",
         "model_seed",
         "training_seed",
@@ -220,6 +258,10 @@ def save_results(results, results_path=None):
         "dataset_sha256",
         "balancing_method",
         "loss_configuration",
+        "objective",
+        "target_encoding",
+        "bias_treatment",
+        "optimization_procedure",
         "split_class_counts",
         "balanced_accuracy",
         "precision",

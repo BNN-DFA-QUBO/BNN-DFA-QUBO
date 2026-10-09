@@ -2,6 +2,8 @@
 import tempfile
 import unittest
 import json
+import io
+from contextlib import redirect_stdout
 from pathlib import Path
 from unittest.mock import patch
 
@@ -147,6 +149,39 @@ class StrokePreprocessingTests(unittest.TestCase):
             new_metadata = load_stroke_metadata(root / "artifacts" / "metadata.json")
             self.assertEqual(sum(new_metadata["split_sizes"].values()), 399)
 
+    def test_matching_artifacts_reject_tampered_split_provenance(self):
+        with tempfile.TemporaryDirectory(dir=Path("data")) as tmp:
+            root = Path(tmp)
+            source = root / "stroke.csv"
+            artifacts = root / "artifacts"
+            self.sample().to_csv(source, index=False)
+            prepare_stroke_data(csv_path=source, output_dir=artifacts, split_seed=17)
+            metadata_path = artifacts / "metadata.json"
+            metadata = json.loads(metadata_path.read_text())
+            metadata["split_policy"] = "tampered_policy"
+            metadata_path.write_text(json.dumps(metadata))
+            with self.assertRaisesRegex(ValueError, "split_policy"):
+                prepare_stroke_data(csv_path=source, output_dir=artifacts, split_seed=17)
+            # Refusal preserves both artifacts until an explicit overwrite is requested.
+            self.assertEqual(json.loads(metadata_path.read_text())["split_policy"], "tampered_policy")
+
+    def test_process_stroke_reports_selected_artifact_directory(self):
+        from experiments.stroke_experiments import process_stroke
+        with tempfile.TemporaryDirectory(dir=Path("data")) as tmp:
+            output_dir = Path(tmp) / "custom-artifacts"
+            X = pd.DataFrame([[0.0]], columns=["feature"])
+            y = pd.Series([0])
+            metadata = {"feature_names": ["feature"], "resampled_train_class_counts": {"0": 1},
+                        "validation_class_counts": {"0": 1}, "test_class_counts": {"0": 1},
+                        "balancing_method": "none"}
+            with patch("sys.argv", ["process_stroke", "--output-dir", str(output_dir)]), \
+                 patch.object(process_stroke, "prepare_stroke_data", return_value=(X, X, X, y, y, y)) as prepare, \
+                 patch.object(process_stroke, "load_stroke_metadata", return_value=metadata), \
+                 redirect_stdout(io.StringIO()) as output:
+                process_stroke.main()
+            self.assertEqual(prepare.call_args.kwargs["output_dir"], output_dir)
+            self.assertIn(str(output_dir), output.getvalue())
+
     def test_saved_representation_rejects_old_schema_and_misaligned_labels(self):
         metadata = {"preprocessing_version": PREPROCESSING_VERSION, "dataset_sha256": "a" * 64, "split_seed": 7,
                     "preprocessing_config_hash": "b" * 64, "feature_names": ["age"], "input_size": 1,
@@ -275,6 +310,10 @@ class StrokePreprocessingTests(unittest.TestCase):
             result_path = Path(tmp) / "results.csv"
             row = {"method": "Real LS", "seed": 42, "model_seed": 42, "split_seed": 13,
                    "representation_seed": 42, "head_seed": "", "preprocessing_version": PREPROCESSING_VERSION,
+                   "experiment_type": "controlled_end_to_end_head_comparison",
+                   "method_variant": "continuous_least_squares", "objective": "squared residual error",
+                   "target_encoding": "stroke labels {0,1}", "bias_treatment": "fitted intercept",
+                   "optimization_procedure": "numpy.linalg.lstsq",
                    "preprocessing_config_hash": "config", "dataset_sha256": "hash",
                    "balancing_method": "random_oversample", "loss_configuration": "least squares",
                    "split_class_counts": '{"validation":{"0": 2, "1": 1}}', "balanced_accuracy": .5}
@@ -285,6 +324,21 @@ class StrokePreprocessingTests(unittest.TestCase):
             self.assertEqual(saved["split_seed"], 13)
             self.assertEqual(saved["representation_seed"], 42)
             self.assertEqual(saved["preprocessing_version"], PREPROCESSING_VERSION)
+            self.assertEqual(saved["experiment_type"], "controlled_end_to_end_head_comparison")
+            self.assertEqual(saved["target_encoding"], "stroke labels {0,1}")
+
+    def test_controlled_and_multiseed_method_variants_describe_distinct_objectives(self):
+        from experiments.stroke_experiments.run_stroke_controlled import CONTROLLED_METHOD_METADATA
+        from experiments.stroke_experiments.stroke_binary_head_multiseed import MULTISEED_METHOD_METADATA
+        self.assertNotEqual(CONTROLLED_METHOD_METADATA["Direct Binary"]["method_variant"],
+                            MULTISEED_METHOD_METADATA["Direct Binary"]["method_variant"])
+        self.assertEqual(CONTROLLED_METHOD_METADATA["Direct Binary"]["bias_treatment"], "fixed at zero")
+        self.assertEqual(MULTISEED_METHOD_METADATA["Direct Binary"]["objective"], "binary_cross_entropy_with_logits")
+        self.assertNotEqual(CONTROLLED_METHOD_METADATA["STE Binary"]["objective"],
+                            MULTISEED_METHOD_METADATA["STE Binary"]["objective"])
+        self.assertEqual(CONTROLLED_METHOD_METADATA["STE Binary"]["target_encoding"],
+                         "stroke 0 -> -1; stroke 1 -> +1")
+        self.assertEqual(MULTISEED_METHOD_METADATA["STE Binary"]["target_encoding"], "stroke labels {0,1}")
 
     def test_end_to_end_synthetic_csv_through_models_and_all_heads(self):
         from experiments.stroke_experiments import stroke_bnn_bp, stroke_bnn_dfa

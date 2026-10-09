@@ -35,6 +35,33 @@ NUM_READS = 100
 STE_EPOCHS = 200
 DIRECT_MAX_PASSES = 20
 
+MULTISEED_METHOD_METADATA = {
+    "Direct Binary": {
+        "method_variant": "coordinate_flip_bce_direct_binary",
+        "objective": "binary_cross_entropy_with_logits",
+        "target_encoding": "stroke labels {0,1}",
+        "bias_treatment": "fixed at zero",
+        "optimization_procedure": "coordinate-wise sign flips from all-positive weights, greedy BCE improvement, at most 20 passes; validation-selected threshold",
+        "loss_configuration": "unweighted BCEWithLogitsLoss-style objective on fixed-representation training rows",
+    },
+    "STE Binary": {
+        "method_variant": "ste_binary_bce",
+        "objective": "mean binary cross entropy with logits",
+        "target_encoding": "stroke labels {0,1}",
+        "bias_treatment": "learned scalar bias",
+        "optimization_procedure": "Adam (lr=0.01) for 200 epochs with straight-through sign-binarized weights; validation-selected threshold",
+        "loss_configuration": "BCEWithLogitsLoss(reduction='mean', pos_weight=None) on fixed-representation training rows",
+    },
+    "QUBO Binary": {
+        "method_variant": "qubo_signed_target_squared_error",
+        "objective": "QUBO squared error on signed targets {-1,+1}",
+        "target_encoding": "stroke 0 -> -1; stroke 1 -> +1",
+        "bias_treatment": "recovered as the training residual offset",
+        "optimization_procedure": "simulated-annealing Ising search over binary weights; validation-selected threshold",
+        "loss_configuration": "QUBO squared-error objective on fixed-representation training rows",
+    },
+}
+
 
 def set_seed(seed):
     random.seed(seed)
@@ -484,6 +511,7 @@ def main(representation_path=DATA_DIR / "stroke_dfa_representation_seed_42.pt", 
                 "split_seed": representation["split_seed"],
                 "dataset_sha256": representation["dataset_sha256"],
                 "preprocessing_version": representation["preprocessing_version"],
+                "preprocessing_config_hash": provenance.get("preprocessing_config_hash"),
                 "balancing_method": representation["balancing_method"],
                 "experiment_type": "fixed_representation_head_seed_variability",
                 "representation_path": str(representation_path),
@@ -491,8 +519,9 @@ def main(representation_path=DATA_DIR / "stroke_dfa_representation_seed_42.pt", 
                 "resampled_train_class_counts": json.dumps(provenance["resampled_train_class_counts"], sort_keys=True),
                 "validation_class_counts": json.dumps(provenance["validation_class_counts"], sort_keys=True),
                 "test_class_counts": json.dumps(provenance["test_class_counts"], sort_keys=True),
-                "loss_configuration": "unweighted BCE on balanced hidden representations",
                 "method": "Direct Binary",
+                **MULTISEED_METHOD_METADATA["Direct Binary"],
+                "bias": 0.0,
                 **metrics
             }
         )
@@ -548,6 +577,7 @@ def main(representation_path=DATA_DIR / "stroke_dfa_representation_seed_42.pt", 
                 "split_seed": representation["split_seed"],
                 "dataset_sha256": representation["dataset_sha256"],
                 "preprocessing_version": representation["preprocessing_version"],
+                "preprocessing_config_hash": provenance.get("preprocessing_config_hash"),
                 "balancing_method": representation["balancing_method"],
                 "experiment_type": "fixed_representation_head_seed_variability",
                 "representation_path": str(representation_path),
@@ -555,8 +585,9 @@ def main(representation_path=DATA_DIR / "stroke_dfa_representation_seed_42.pt", 
                 "resampled_train_class_counts": json.dumps(provenance["resampled_train_class_counts"], sort_keys=True),
                 "validation_class_counts": json.dumps(provenance["validation_class_counts"], sort_keys=True),
                 "test_class_counts": json.dumps(provenance["test_class_counts"], sort_keys=True),
-                "loss_configuration": "unweighted BCE on balanced hidden representations",
                 "method": "STE Binary",
+                **MULTISEED_METHOD_METADATA["STE Binary"],
+                "bias": float(bias),
                 **metrics
             }
         )
@@ -615,6 +646,7 @@ def main(representation_path=DATA_DIR / "stroke_dfa_representation_seed_42.pt", 
                 "split_seed": representation["split_seed"],
                 "dataset_sha256": representation["dataset_sha256"],
                 "preprocessing_version": representation["preprocessing_version"],
+                "preprocessing_config_hash": provenance.get("preprocessing_config_hash"),
                 "balancing_method": representation["balancing_method"],
                 "experiment_type": "fixed_representation_head_seed_variability",
                 "representation_path": str(representation_path),
@@ -622,9 +654,10 @@ def main(representation_path=DATA_DIR / "stroke_dfa_representation_seed_42.pt", 
                 "resampled_train_class_counts": json.dumps(provenance["resampled_train_class_counts"], sort_keys=True),
                 "validation_class_counts": json.dumps(provenance["validation_class_counts"], sort_keys=True),
                 "test_class_counts": json.dumps(provenance["test_class_counts"], sort_keys=True),
-                "loss_configuration": "QUBO squared-error objective on balanced hidden representations",
                 "method": "QUBO Binary",
+                **MULTISEED_METHOD_METADATA["QUBO Binary"],
                 "alpha": alpha,
+                "bias": float(bias),
                 **metrics
             }
         )

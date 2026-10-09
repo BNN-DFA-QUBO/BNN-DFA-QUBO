@@ -266,9 +266,11 @@ def prepare_stroke_data(split_seed: int | None = None, balance_method: str | Non
         "balancing_method": balance_method,
     }
     if prior and compatible and not overwrite:
-        for key in ("split_sizes", "split_row_ids", "feature_names", "original_train_class_counts",
-                    "resampled_train_class_counts", "validation_class_counts", "test_class_counts"):
-            if prior.get(key) != metadata.get(key):
+        # Validate every persisted provenance field, including the split seed/policy,
+        # library versions, row identities, and balancing details. The config hash
+        # alone cannot detect metadata edited independently of the fitted artifacts.
+        for key, expected_value in metadata.items():
+            if prior.get(key) != expected_value:
                 raise ValueError(f"Saved stroke metadata field {key!r} does not match the current deterministic pipeline")
     if prior is None or overwrite:
         joblib.dump(preprocessor, preprocessor_path)
