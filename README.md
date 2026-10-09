@@ -197,6 +197,8 @@ python -m experiments.stroke_experiments.stroke_dfa_ste_binary
 python -m experiments.stroke_experiments.stroke_dfa_qubo
 python -m experiments.stroke_experiments.stroke_dfa_least_squares
 
+#If you want to run above codes again use --overwrite at the end of each one
+
 # Optional multi-seed binary-head comparison.
 python -m experiments.stroke_experiments.stroke_binary_head_multiseed
 
