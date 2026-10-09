@@ -1,417 +1,60 @@
-import os
+"""Signed-target least-squares head; unlike stroke_real_ls this fits targets {-1,+1}."""
+import argparse
+from pathlib import Path
 
 import torch
-from sklearn.metrics import (
-    balanced_accuracy_score,
-    precision_score,
-    recall_score,
-    f1_score,
-    roc_auc_score,
-    average_precision_score
-)
+
+from utils.stroke_representation import load_representation
+from utils.stroke_data import DATA_DIR
+from utils.stroke_metrics import find_best_threshold, calculate_metrics
 
 
-representation_path = (
-    "data/stroke_dfa_representation_seed_42.pt"
-)
+def fit_signed_least_squares(hidden, labels):
+    """Fit a {-1,+1} target with an explicit intercept via stable least squares."""
+    design = torch.cat((hidden.float(), torch.ones(len(hidden), 1)), dim=1)
+    signed_targets = (2.0 * labels.float() - 1.0).unsqueeze(1)
+    solution = torch.linalg.lstsq(design, signed_targets).solution
+    return solution[:, 0]
 
 
-data = torch.load(
-    representation_path,
-    weights_only=False
-)
-
-
-H_train = data["H_train"].float()
-H_val = data["H_val"].float()
-H_test = data["H_test"].float()
-
-y_train = data["y_train"].float()
-y_val = data["y_val"].float()
-y_test = data["y_test"].float()
-
-
-print("Representation loaded from:")
-print(representation_path)
-
-print("\nRepresentation Shapes")
-
-print(
-    "H_train:",
-    H_train.shape
-)
-
-print(
-    "H_val:",
-    H_val.shape
-)
-
-print(
-    "H_test:",
-    H_test.shape
-)
-
-
-H_train_augmented = torch.cat(
-    [
-        H_train,
-        torch.ones(
-            H_train.size(0),
-            1
-        )
-    ],
-    dim=1
-)
-
-H_val_augmented = torch.cat(
-    [
-        H_val,
-        torch.ones(
-            H_val.size(0),
-            1
-        )
-    ],
-    dim=1
-)
-
-H_test_augmented = torch.cat(
-    [
-        H_test,
-        torch.ones(
-            H_test.size(0),
-            1
-        )
-    ],
-    dim=1
-)
-
-
-y_train_signed = (
-    2 * y_train - 1
-).unsqueeze(1)
-
-
-A = (
-    H_train_augmented.T
-    @ H_train_augmented
-)
-
-B = (
-    H_train_augmented.T
-    @ y_train_signed
-)
-
-
-weights = torch.linalg.solve(
-    A,
-    B
-)
-
-
-train_scores = (
-    H_train_augmented @ weights
-).squeeze(1)
-
-val_scores = (
-    H_val_augmented @ weights
-).squeeze(1)
-
-test_scores = (
-    H_test_augmented @ weights
-).squeeze(1)
-
-
-thresholds = torch.unique(
-    val_scores
-).sort().values
-
-
-best_threshold = 0.0
-best_val_balanced_accuracy = -1.0
-
-
-for threshold in thresholds:
-
-    val_predictions = (
-        val_scores >= threshold
-    ).float()
-
-    val_balanced_accuracy = (
-        balanced_accuracy_score(
-            y_val.numpy(),
-            val_predictions.numpy()
-        )
-    )
-
-    if (
-        val_balanced_accuracy
-        > best_val_balanced_accuracy
-    ):
-
-        best_val_balanced_accuracy = (
-            val_balanced_accuracy
-        )
-
-        best_threshold = (
-            threshold.item()
-        )
-
-
-train_predictions = (
-    train_scores >= best_threshold
-).float()
-
-val_predictions = (
-    val_scores >= best_threshold
-).float()
-
-test_predictions = (
-    test_scores >= best_threshold
-).float()
-
-
-def calculate_metrics(
-    labels,
-    predictions,
-    scores
-):
-
-    labels = labels.numpy()
-    predictions = predictions.numpy()
-    scores = scores.numpy()
-
+def train_signed_least_squares(representation_path):
+    data = load_representation(representation_path)
+    weights = fit_signed_least_squares(data["H_train"], data["y_train"])
+    val_design = torch.cat((data["H_val"].float(), torch.ones(len(data["H_val"]), 1)), dim=1)
+    test_design = torch.cat((data["H_test"].float(), torch.ones(len(data["H_test"]), 1)), dim=1)
+    val_scores = val_design @ weights
+    threshold, validation_ba = find_best_threshold(data["y_val"].numpy(), val_scores.numpy())
+    test_scores = test_design @ weights
+    metrics = calculate_metrics(data["y_test"].numpy(), test_scores.numpy(), threshold)
     return {
-        "balanced_accuracy": balanced_accuracy_score(
-            labels,
-            predictions
-        ),
-        "precision": precision_score(
-            labels,
-            predictions,
-            zero_division=0
-        ),
-        "recall": recall_score(
-            labels,
-            predictions,
-            zero_division=0
-        ),
-        "f1": f1_score(
-            labels,
-            predictions,
-            zero_division=0
-        ),
-        "roc_auc": roc_auc_score(
-            labels,
-            scores
-        ),
-        "pr_auc": average_precision_score(
-            labels,
-            scores
-        )
+        "method": "Signed Target LS", "target_encoding": "stroke 0 -> -1, stroke 1 -> +1",
+        "training_seed": data["training_seed"], "representation_seed": data["training_seed"],
+        "split_seed": data["split_seed"], "dataset_sha256": data["dataset_sha256"],
+        "preprocessing_version": data["preprocessing_version"], "balancing_method": data["balancing_method"],
+        "split_class_counts": {key: data["data_metadata"].get(key) for key in (
+            "original_train_class_counts", "resampled_train_class_counts", "validation_class_counts", "test_class_counts")},
+        "threshold": float(threshold), "validation_balanced_accuracy": float(validation_ba),
+        "weights_with_intercept": weights, **metrics,
     }
 
 
-train_metrics = calculate_metrics(
-    y_train,
-    train_predictions,
-    train_scores
-)
-
-val_metrics = calculate_metrics(
-    y_val,
-    val_predictions,
-    val_scores
-)
-
-test_metrics = calculate_metrics(
-    y_test,
-    test_predictions,
-    test_scores
-)
-
-
-print("\nThreshold Selection")
-
-print(
-    f"Selected validation threshold: "
-    f"{best_threshold:.6f}"
-)
-
-print(
-    f"Validation Balanced Accuracy at "
-    f"selected threshold: "
-    f"{best_val_balanced_accuracy * 100:.2f}%"
-)
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--representation", default=str(DATA_DIR / "stroke_dfa_representation_seed_42.pt"))
+    parser.add_argument("--output", default=str(DATA_DIR / "stroke_dfa_signed_ls_results.pt"))
+    parser.add_argument("--overwrite", action="store_true")
+    args = parser.parse_args()
+    output = Path(args.output)
+    if output.exists() and not args.overwrite:
+        raise FileExistsError(f"Refusing to replace existing result {output}; pass --overwrite")
+    result = train_signed_least_squares(args.representation)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    torch.save(result, output)
+    print(f"Validation BA: {result['validation_balanced_accuracy']:.4f}")
+    metric_names = ("balanced_accuracy", "precision", "recall", "f1", "roc_auc", "pr_auc", "tn", "fp", "fn", "tp")
+    print("Test metrics:", {key: result[key] for key in metric_names})
+    print(f"Results saved to: {output}")
 
 
-print("\nReal LS Results")
-
-
-print("\nTrain Results")
-
-print(
-    f"Balanced Accuracy: "
-    f"{train_metrics['balanced_accuracy'] * 100:.2f}%"
-)
-
-print(
-    f"Precision: "
-    f"{train_metrics['precision'] * 100:.2f}%"
-)
-
-print(
-    f"Recall: "
-    f"{train_metrics['recall'] * 100:.2f}%"
-)
-
-print(
-    f"F1: "
-    f"{train_metrics['f1'] * 100:.2f}%"
-)
-
-print(
-    f"ROC-AUC: "
-    f"{train_metrics['roc_auc'] * 100:.2f}%"
-)
-
-print(
-    f"PR-AUC: "
-    f"{train_metrics['pr_auc'] * 100:.2f}%"
-)
-
-
-print("\nValidation Results")
-
-print(
-    f"Balanced Accuracy: "
-    f"{val_metrics['balanced_accuracy'] * 100:.2f}%"
-)
-
-print(
-    f"Precision: "
-    f"{val_metrics['precision'] * 100:.2f}%"
-)
-
-print(
-    f"Recall: "
-    f"{val_metrics['recall'] * 100:.2f}%"
-)
-
-print(
-    f"F1: "
-    f"{val_metrics['f1'] * 100:.2f}%"
-)
-
-print(
-    f"ROC-AUC: "
-    f"{val_metrics['roc_auc'] * 100:.2f}%"
-)
-
-print(
-    f"PR-AUC: "
-    f"{val_metrics['pr_auc'] * 100:.2f}%"
-)
-
-
-print("\nTest Results")
-
-print(
-    f"Balanced Accuracy: "
-    f"{test_metrics['balanced_accuracy'] * 100:.2f}%"
-)
-
-print(
-    f"Precision: "
-    f"{test_metrics['precision'] * 100:.2f}%"
-)
-
-print(
-    f"Recall: "
-    f"{test_metrics['recall'] * 100:.2f}%"
-)
-
-print(
-    f"F1: "
-    f"{test_metrics['f1'] * 100:.2f}%"
-)
-
-print(
-    f"ROC-AUC: "
-    f"{test_metrics['roc_auc'] * 100:.2f}%"
-)
-
-print(
-    f"PR-AUC: "
-    f"{test_metrics['pr_auc'] * 100:.2f}%"
-)
-
-
-print("\nPrediction Distribution")
-
-test_scores_np = (
-    test_scores.numpy()
-)
-
-test_predictions_np = (
-    test_predictions.numpy()
-)
-
-y_test_np = (
-    y_test.numpy()
-)
-
-print(
-    "Minimum score:",
-    test_scores_np.min()
-)
-
-print(
-    "Maximum score:",
-    test_scores_np.max()
-)
-
-print(
-    "Mean score:",
-    test_scores_np.mean()
-)
-
-print(
-    "Predicted positives:",
-    test_predictions_np.sum()
-)
-
-print(
-    "Actual positives:",
-    y_test_np.sum()
-)
-
-
-os.makedirs(
-    "data",
-    exist_ok=True
-)
-
-
-results_path = (
-    "data/stroke_dfa_real_ls_results.pt"
-)
-
-
-torch.save(
-    {
-        "head": "real_ls",
-
-        "weights": weights,
-
-        "threshold": best_threshold,
-
-        "train_metrics": train_metrics,
-        "val_metrics": val_metrics,
-        "test_metrics": test_metrics
-    },
-    results_path
-)
-
-
-print("\nResults saved to:")
-print(results_path)
+if __name__ == "__main__":
+    main()

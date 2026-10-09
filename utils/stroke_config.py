@@ -3,9 +3,9 @@ import os
 SEEDS = [42, 123, 2024, 7, 99]
 
 SPLIT_SEED = int(os.environ.get("STROKE_SPLIT_SEED", "42"))
+BALANCING_METHOD = os.environ.get("STROKE_BALANCING_METHOD", "random_oversample")
+PREPROCESSING_VERSION = "finalboss-stroke-v2"
 
-# Active model input size comes from the fitted preprocessing schema.
-INPUT_SIZE = None
 HIDDEN_SIZE = 64
 
 BATCH_SIZE = 64

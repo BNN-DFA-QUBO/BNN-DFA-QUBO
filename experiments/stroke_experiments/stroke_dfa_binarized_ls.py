@@ -8,6 +8,7 @@ sys.path.append(
 import numpy as np
 
 from utils.stroke_representation import load_representation
+from utils.stroke_data import DATA_DIR
 from utils.stroke_metrics import (
     find_best_threshold,
     calculate_metrics
@@ -98,9 +99,7 @@ def train_binarized_ls(representation_path):
 
 
 if __name__ == "__main__":
-    representation_path = (
-        "data/stroke_dfa_representation_seed_42.pt"
-    )
+    representation_path = DATA_DIR / "stroke_dfa_representation_seed_42.pt"
 
     result = train_binarized_ls(
         representation_path

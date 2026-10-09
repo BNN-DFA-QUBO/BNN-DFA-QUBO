@@ -8,11 +8,12 @@ sys.path.append(
 import torch
 import torch.nn as nn
 import json
+import argparse
 from torch.utils.data import DataLoader, TensorDataset
 from sklearn.metrics import balanced_accuracy_score
 
 from models.stroke_bnn import StrokeBNN
-from utils.stroke_data import prepare_stroke_data
+from utils.stroke_data import DATA_DIR, prepare_stroke_data
 from utils.seed import set_seed
 from utils.stroke_config import (
     HIDDEN_SIZE,
@@ -56,7 +57,10 @@ def evaluate_validation(model, X_val, y_val, device):
     )
 
 
-def train_bnn_bp(seed):
+def train_bnn_bp(seed, split_seed=None, balance_method=None, overwrite=False, output_dir=DATA_DIR):
+    result_path = Path(output_dir) / f"stroke_bnn_bp_seed_{seed}.json"
+    if result_path.exists() and not overwrite:
+        raise FileExistsError(f"Refusing to replace existing result {result_path}; pass overwrite=True")
     set_seed(seed)
 
     device = get_device()
@@ -68,7 +72,8 @@ def train_bnn_bp(seed):
         y_train,
         y_val,
         y_test
-    ) = prepare_stroke_data()
+    ) = prepare_stroke_data(split_seed=split_seed, balance_method=balance_method, overwrite=overwrite,
+                            output_dir=output_dir)
 
     X_train_tensor = torch.tensor(
         X_train.values,
@@ -100,18 +105,7 @@ def train_bnn_bp(seed):
         hidden_size=HIDDEN_SIZE
     ).to(device)
 
-    positive_count = y_train.sum()
-    negative_count = len(y_train) - positive_count
-
-    pos_weight = torch.tensor(
-        negative_count / positive_count,
-        dtype=torch.float32,
-        device=device
-    )
-
-    criterion = nn.BCEWithLogitsLoss(
-        pos_weight=pos_weight
-    )
+    criterion = nn.BCEWithLogitsLoss()
 
     optimizer = torch.optim.Adam(
         model.parameters(),
@@ -177,10 +171,17 @@ def train_bnn_bp(seed):
         test_scores = torch.sigmoid(model(torch.tensor(X_test.values, dtype=torch.float32, device=device))).cpu().numpy()
     threshold, validation_ba = find_best_threshold(y_val.values, val_scores)
     test_metrics = calculate_metrics(y_test.values, test_scores, threshold)
-    metadata = load_stroke_metadata()
-    result_path = f"data/stroke_bnn_bp_seed_{seed}.json"
+    metadata = load_stroke_metadata(Path(output_dir) / "metadata.json")
+    result_path.parent.mkdir(parents=True, exist_ok=True)
     with open(result_path, "w", encoding="utf-8") as f:
-        json.dump({"model": "BNN backpropagation", "seed": seed, "validation_balanced_accuracy": validation_ba,
+        json.dump({"model": "BNN backpropagation", "training_seed": seed, "split_seed": metadata["split_seed"],
+                   "preprocessing_version": metadata["preprocessing_version"], "balancing_method": metadata["balancing_method"],
+                   "dataset_sha256": metadata["dataset_sha256"], "preprocessing_config_hash": metadata["preprocessing_config_hash"],
+                   "feature_names": metadata["feature_names"],
+                   "loss": "BCEWithLogitsLoss(reduction='mean', pos_weight=None)",
+                   "model_config": {"hidden_size": HIDDEN_SIZE, "batch_size": BATCH_SIZE,
+                                    "epochs": TRAIN_EPOCHS, "learning_rate": LEARNING_RATE},
+                   "validation_balanced_accuracy": validation_ba,
                    "split_class_counts": {"train_original": metadata["original_train_class_counts"],
                                           "train_resampled": metadata["resampled_train_class_counts"],
                                           "validation": metadata["validation_class_counts"],
@@ -227,12 +228,20 @@ def train_bnn_bp(seed):
         "y_test": y_test,
         "test_metrics": test_metrics,
         "validation_balanced_accuracy": validation_ba,
-        "metrics_path": result_path
+        "metrics_path": str(result_path)
     }
 
 
 if __name__ == "__main__":
-    result = train_bnn_bp(seed=42)
+    parser = argparse.ArgumentParser(description="Train the stroke BNN with backpropagation")
+    parser.add_argument("--seed", type=int, default=42, help="Model training seed")
+    parser.add_argument("--split-seed", type=int, default=None, help="Dataset split seed (defaults to saved/current preprocessing config)")
+    parser.add_argument("--balancing", choices=("random_oversample", "none"), default=None)
+    parser.add_argument("--overwrite", action="store_true")
+    parser.add_argument("--output-dir", default=str(DATA_DIR))
+    args = parser.parse_args()
+    result = train_bnn_bp(seed=args.seed, split_seed=args.split_seed,
+                          balance_method=args.balancing, overwrite=args.overwrite, output_dir=args.output_dir)
 
     print(f"Device: {result['device']}")
     print(

@@ -165,7 +165,7 @@ BNN-DFA-QUBO/
 
 ## Stroke prediction experiments
 
-The stroke pipeline downloads the public Fedesoriano Kaggle dataset locally. A raw CSV already present at `data/stroke/healthcare-dataset-stroke-data.csv` is preserved by default.
+The stroke pipeline downloads the public Fedesoriano Kaggle dataset (`fedesoriano/stroke-prediction-dataset`) through KaggleHub. Public dataset downloads do not ordinarily need Kaggle credentials. A raw CSV already present at `data/stroke/healthcare-dataset-stroke-data.csv` is preserved by default; replacing it requires the explicit `--overwrite` flag.
 
 Run these commands from the repository root after installing `requirements.txt`:
 
@@ -178,11 +178,13 @@ python -m experiments.stroke_experiments.download_stroke
 # Create deterministic stratified 70/15/15 splits, fit preprocessing, and balance train only.
 python -m experiments.stroke_experiments.process_stroke --seed 42
 
-# BNN trained with backpropagation.
+# BNN trained with backpropagation (ordinary unweighted mean BCEWithLogitsLoss).
 python -m experiments.stroke_experiments.stroke_bnn_bp
 
-# DFA representation, followed by all five DFA heads and a result summary.
-python -m experiments.stroke_experiments.run_stroke_controlled
+# Fixed split, multiple BNN/DFA training seeds, then all five heads per representation.
+python -m experiments.stroke_experiments.run_stroke_controlled --split-seed 42 --seeds 42 123 2024 7 99
+# To intentionally replace generated representations/results on a rerun, add --overwrite.
+# python -m experiments.stroke_experiments.run_stroke_controlled --split-seed 42 --seeds 42 123 2024 7 99 --overwrite
 
 # Individual DFA representation and head workflows (after process_stroke).
 python -m experiments.stroke_experiments.stroke_bnn_dfa
@@ -195,10 +197,15 @@ python -m experiments.stroke_experiments.stroke_dfa_least_squares
 
 # Optional multi-seed binary-head comparison.
 python -m experiments.stroke_experiments.stroke_binary_head_multiseed
+
+# Run focused scientific-invariant tests (synthetic fixtures; no download required).
+python -m unittest experiments.stroke_experiments.test_stroke_preprocessing
 ```
 
-The data directory is ignored by Git. Set `STROKE_DATA_DIR` to choose another local data/artifact directory, or `STROKE_CSV` to point at an existing raw CSV. `STROKE_SPLIT_SEED` controls the default split seed; `process_stroke --seed` selects the processing seed. The processor writes `metadata.json` (dataset hash, row IDs per split, feature order and dynamic class counts) and `preprocessor.joblib` under `STROKE_DATA_DIR`. Each training call recreates deterministic splits and fits every transform on training rows only, then applies the fitted transforms to validation and test.
+The data directory is ignored by Git. Set `STROKE_DATA_DIR` to choose another local data/artifact directory, `STROKE_CSV` to point at an existing raw CSV, or `STROKE_SPLIT_SEED` to set the default split seed. The split seed is separate from each BNN/DFA model seed: use `--split-seed` to vary partitions, and `--seeds` to compare model-training seeds on one fixed partition. The controlled runner prepares the requested split before training. It writes `metadata.json` (raw SHA-256, split policy and seed, row IDs per split, feature order, schema/config hashes, runtime library versions, and dynamic class counts) and `preprocessor.joblib` under `STROKE_DATA_DIR`. Matching artifacts are reused only after validation. Stale or incompatible artifacts fail clearly; pass `process_stroke --overwrite` or the controlled runner's `--overwrite` to regenerate them. Existing result files are also protected from accidental replacement.
 
-Feature engineering retains the ZIP choices: grouped work types, cardiovascular comorbidity, age/glucose interaction, glucose risk tier, metabolic syndrome flag, KNN imputation, Yeo–Johnson transforms, and one-hot categorical inputs. Input width is validated from the saved feature list (23 for the supplied schema). The ZIP's ordinary SMOTE plus rounding can create impossible multi-hot category groups, so this implementation balances only training data through exact minority-row duplication. That preserves binary and one-hot semantics and records original and balanced counts plus the method in metadata. Validation and test are untouched.
+Preprocessing follows the FinalBoss definitions and feature order: binary gender/marital/residence fields; age, hypertension, heart disease, glucose, BMI; cardiovascular comorbidity; raw age/glucose interaction; glucose risk tier; metabolic syndrome flag; grouped-work and smoking one-hot columns; and Yeo–Johnson versions of glucose, BMI, and the interaction. KNN imputation is fitted on training rows using age, gender, glucose, hypertension, heart disease, and BMI. Input width comes from the fitted feature names (23 columns for the supplied dataset), not a model constant. The single `gender == Other` row is excluded before splitting while its ID remains auditable in the source file. All learned imputers, encoders, and power transforms are fitted on train only and reused unchanged for validation/test.
 
-The DFA heads consume labels saved alongside their representations, avoiding independently regenerated split labels. Validation selects thresholds; test is used only for final reported metrics. The ZIP's CSVs and plots are reference artifacts and remain outside tracked source files.
+Balancing is explicit: `random_oversample` duplicates minority training rows exactly and does not synthesize records. The supplied FinalBoss script uses ordinary SMOTE followed by rounding encoded category flags, which can make invalid multi-hot combinations; the project therefore retains exact-row random oversampling as its documented alternative. Original and post-balancing counts and method are stored in metadata. Validation and test are never resampled and retain their imbalanced class distribution. Set `STROKE_BALANCING_METHOD=none` or pass `--balancing none` to compare without balancing. BNN backprop and DFA use ordinary mean `BCEWithLogitsLoss` with no `pos_weight`; the DFA output error is scaled by batch size to match that mean reduction.
+
+Saved representations include training seed, split seed, preprocessing/schema version, raw-data hash, config hash, feature names, and aligned labels/row IDs. Old or incompatible representations are rejected by head loaders. All five controlled heads consume the same representation and its saved labels; validation selects thresholds, while test is used only for final reported metrics. `stroke_binary_head_multiseed` measures head initialization/optimization variability on one explicitly selected fixed representation, rather than end-to-end BNN variability. `stroke_real_ls` fits `{0,1}` targets; `stroke_dfa_least_squares` intentionally fits signed `{-1,+1}` targets with an intercept using `torch.linalg.lstsq`. The included tests cover split/provenance integrity, feature engineering, training-only fit, valid resampling, stale artifacts, all five heads, DFA BCE-gradient scaling, and rank-deficient least squares. ZIP CSVs and plots remain reference artifacts, not inputs to model runs.

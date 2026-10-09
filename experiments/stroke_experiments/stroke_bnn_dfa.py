@@ -8,12 +8,13 @@ sys.path.append(
 import torch
 import torch.nn as nn
 import json
+import argparse
 from torch.utils.data import DataLoader, TensorDataset
 from sklearn.metrics import balanced_accuracy_score
 
 from models.stroke_bnn import StrokeBNN
 from models.stroke_dfa import StrokeDFA, StrokeDFAFunction
-from utils.stroke_data import prepare_stroke_data
+from utils.stroke_data import DATA_DIR, prepare_stroke_data
 from utils.stroke_representation import save_representation
 from utils.stroke_data import load_stroke_metadata
 from utils.stroke_metrics import find_best_threshold, calculate_metrics
@@ -58,7 +59,13 @@ def evaluate_validation(model, X_val, y_val, device):
     )
 
 
-def train_dfa(seed):
+def train_dfa(seed, split_seed=None, balance_method=None, overwrite=False, output_dir=DATA_DIR):
+    output_dir = Path(output_dir)
+    result_path = output_dir / f"stroke_bnn_dfa_seed_{seed}.json"
+    representation_path = output_dir / f"stroke_dfa_representation_seed_{seed}.pt"
+    existing = [path for path in (result_path, representation_path) if path.exists()]
+    if existing and not overwrite:
+        raise FileExistsError("Refusing to replace existing stroke outputs: " + ", ".join(existing) + "; pass overwrite=True")
     set_seed(seed)
 
     device = get_device()
@@ -70,7 +77,8 @@ def train_dfa(seed):
         y_train,
         y_val,
         y_test
-    ) = prepare_stroke_data()
+    ) = prepare_stroke_data(split_seed=split_seed, balance_method=balance_method, overwrite=overwrite,
+                            output_dir=output_dir)
 
     X_train_tensor = torch.tensor(
         X_train.values,
@@ -107,18 +115,7 @@ def train_dfa(seed):
         device=device
     )
 
-    positive_count = y_train.sum()
-    negative_count = len(y_train) - positive_count
-
-    pos_weight = torch.tensor(
-        negative_count / positive_count,
-        dtype=torch.float32,
-        device=device
-    )
-
-    criterion = nn.BCEWithLogitsLoss(
-        pos_weight=pos_weight
-    )
+    criterion = nn.BCEWithLogitsLoss()
 
     optimizer = torch.optim.Adam(
         model.parameters(),
@@ -150,8 +147,7 @@ def train_dfa(seed):
 
             output_error = StrokeDFAFunction.output_error(
                 logits,
-                y_batch,
-                pos_weight
+                y_batch
             )
 
             output_error = (
@@ -227,10 +223,17 @@ def train_dfa(seed):
         test_scores = torch.sigmoid(model(torch.tensor(X_test.values, dtype=torch.float32, device=device))).cpu().numpy()
     threshold, validation_ba = find_best_threshold(y_val.values, val_scores)
     test_metrics = calculate_metrics(y_test.values, test_scores, threshold)
-    metadata = load_stroke_metadata()
-    result_path = f"data/stroke_bnn_dfa_seed_{seed}.json"
+    metadata = load_stroke_metadata(output_dir / "metadata.json")
+    result_path.parent.mkdir(parents=True, exist_ok=True)
     with open(result_path, "w", encoding="utf-8") as f:
-        json.dump({"model": "BNN DFA output", "seed": seed, "threshold": threshold,
+        json.dump({"model": "BNN DFA output", "training_seed": seed, "split_seed": metadata["split_seed"],
+                   "preprocessing_version": metadata["preprocessing_version"], "balancing_method": metadata["balancing_method"],
+                   "dataset_sha256": metadata["dataset_sha256"], "preprocessing_config_hash": metadata["preprocessing_config_hash"],
+                   "feature_names": metadata["feature_names"],
+                   "loss": "BCEWithLogitsLoss(reduction='mean', pos_weight=None)",
+                   "model_config": {"hidden_size": HIDDEN_SIZE, "batch_size": BATCH_SIZE,
+                                    "epochs": TRAIN_EPOCHS, "learning_rate": LEARNING_RATE},
+                   "threshold": threshold,
                    "validation_balanced_accuracy": validation_ba,
                    "split_class_counts": {"train_original": metadata["original_train_class_counts"],
                                           "train_resampled": metadata["resampled_train_class_counts"],
@@ -273,7 +276,11 @@ def train_dfa(seed):
         "H_val": H_val,
         "H_test": H_test,
         "feature_names": list(X_train.columns),
-        "data_metadata": load_stroke_metadata(),
+        "data_metadata": load_stroke_metadata(output_dir / "metadata.json"),
+        "training_seed": seed,
+        "training_config": {"hidden_size": HIDDEN_SIZE, "batch_size": BATCH_SIZE,
+                            "epochs": TRAIN_EPOCHS, "learning_rate": LEARNING_RATE,
+                            "loss": "BCEWithLogitsLoss(reduction='mean', pos_weight=None)"},
         "test_metrics": test_metrics,
         "validation_balanced_accuracy": validation_ba,
         "y_train": y_train,
@@ -283,12 +290,20 @@ def train_dfa(seed):
 
 
 if __name__ == "__main__":
-    seed = 42
+    parser = argparse.ArgumentParser(description="Train the stroke BNN using DFA and save hidden representations")
+    parser.add_argument("--seed", type=int, default=42, help="Model training seed")
+    parser.add_argument("--split-seed", type=int, default=None, help="Dataset split seed (defaults to saved/current preprocessing config)")
+    parser.add_argument("--balancing", choices=("random_oversample", "none"), default=None)
+    parser.add_argument("--overwrite", action="store_true")
+    parser.add_argument("--output-dir", default=str(DATA_DIR))
+    args = parser.parse_args()
+    seed = args.seed
 
-    result = train_dfa(seed)
+    result = train_dfa(seed, split_seed=args.split_seed, balance_method=args.balancing,
+                       overwrite=args.overwrite, output_dir=args.output_dir)
 
     output_path = (
-        f"data/stroke_dfa_representation_seed_{seed}.pt"
+        str(Path(args.output_dir) / f"stroke_dfa_representation_seed_{seed}.pt")
     )
 
     save_representation(

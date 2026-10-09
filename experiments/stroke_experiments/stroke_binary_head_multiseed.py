@@ -6,6 +6,8 @@ sys.path.append(
 )
 
 import random
+import argparse
+import json
 import numpy as np
 import pandas as pd
 import torch
@@ -21,9 +23,13 @@ from sklearn.metrics import (
     average_precision_score,
     confusion_matrix,
 )
+from utils.stroke_representation import load_representation
+from utils.stroke_data import DATA_DIR
+from utils.stroke_metrics import find_best_threshold as shared_find_best_threshold
 
 
 
+# These are head initialization/optimization seeds on one fixed representation.
 SEEDS = [42, 123, 2024, 7, 99]
 NUM_READS = 100
 STE_EPOCHS = 200
@@ -39,11 +45,8 @@ def set_seed(seed):
         torch.cuda.manual_seed_all(seed)
 
 
-def load_data():
-    representation = torch.load(
-        "data/stroke_dfa_representation_seed_42.pt",
-        map_location="cpu"
-    )
+def load_data(representation_path):
+    representation = load_representation(representation_path)
 
     H_train = representation["H_train"].float()
     H_val = representation["H_val"].float()
@@ -63,32 +66,14 @@ def load_data():
         H_test,
         y_train,
         y_val,
-        y_test
+        y_test,
+        representation
     )
 
 
 def find_best_threshold(y_true, scores):
-    thresholds = torch.unique(scores)
-
-    best_threshold = thresholds[0].item()
-    best_ba = -1.0
-
-    for threshold in thresholds:
-
-        predictions = (
-            scores >= threshold
-        ).long()
-
-        ba = balanced_accuracy_score(
-            y_true.numpy(),
-            predictions.numpy()
-        )
-
-        if ba > best_ba:
-            best_ba = ba
-            best_threshold = threshold.item()
-
-    return best_threshold
+    threshold, _ = shared_find_best_threshold(y_true.numpy(), scores.numpy())
+    return float(threshold)
 
 
 def evaluate(
@@ -156,11 +141,6 @@ def direct_binary(
         dtype=torch.float32
     )
 
-    positive_weight = (
-        (labels == 0).sum()
-        / (labels == 1).sum()
-    )
-
     target = labels.clone()
 
     best_loss = float("inf")
@@ -181,8 +161,7 @@ def direct_binary(
 
             loss = nn.functional.binary_cross_entropy_with_logits(
                 scores,
-                target,
-                pos_weight=positive_weight
+                target
             )
 
             if loss.item() < best_loss:
@@ -239,11 +218,6 @@ def ste_binary(
 ):
     set_seed(seed)
 
-    positive_weight = (
-        (labels == 0).sum()
-        / (labels == 1).sum()
-    )
-
     head = STEBinaryHead(
         H.shape[1]
     )
@@ -253,9 +227,7 @@ def ste_binary(
         lr=0.01
     )
 
-    criterion = nn.BCEWithLogitsLoss(
-        pos_weight=positive_weight
-    )
+    criterion = nn.BCEWithLogitsLoss()
 
     for _ in range(STE_EPOCHS):
 
@@ -444,7 +416,12 @@ def qubo_binary(
 # MAIN
 # ============================================================
 
-def main():
+def main(representation_path=DATA_DIR / "stroke_dfa_representation_seed_42.pt", seeds=None,
+         output_path=DATA_DIR / "stroke_binary_head_multiseed.csv", overwrite=False):
+    summary_path = str(Path(output_path).with_name(Path(output_path).stem + "_summary.csv"))
+    existing = [path for path in (output_path, summary_path) if Path(path).exists()]
+    if existing and not overwrite:
+        raise FileExistsError("Refusing to replace existing multi-seed outputs: " + ", ".join(existing) + "; pass --overwrite")
 
     (
         H_train,
@@ -452,8 +429,12 @@ def main():
         H_test,
         y_train,
         y_val,
-        y_test
-    ) = load_data()
+        y_test,
+        representation
+    ) = load_data(representation_path)
+    seeds = list(SEEDS if seeds is None else seeds)
+    provenance = representation["data_metadata"]
+    Path(output_path).parent.mkdir(parents=True, exist_ok=True)
 
     print("H_train:", H_train.shape)
     print("H_val:", H_val.shape)
@@ -461,7 +442,7 @@ def main():
 
     results = []
 
-    for seed in SEEDS:
+    for seed in seeds:
 
         print()
         print("=" * 60)
@@ -496,6 +477,21 @@ def main():
         results.append(
             {
                 "seed": seed,
+                "head_seed": seed,
+                "model_seed": representation["training_seed"],
+                "training_seed": representation["training_seed"],
+                "representation_seed": representation["training_seed"],
+                "split_seed": representation["split_seed"],
+                "dataset_sha256": representation["dataset_sha256"],
+                "preprocessing_version": representation["preprocessing_version"],
+                "balancing_method": representation["balancing_method"],
+                "experiment_type": "fixed_representation_head_seed_variability",
+                "representation_path": str(representation_path),
+                "original_train_class_counts": json.dumps(provenance["original_train_class_counts"], sort_keys=True),
+                "resampled_train_class_counts": json.dumps(provenance["resampled_train_class_counts"], sort_keys=True),
+                "validation_class_counts": json.dumps(provenance["validation_class_counts"], sort_keys=True),
+                "test_class_counts": json.dumps(provenance["test_class_counts"], sort_keys=True),
+                "loss_configuration": "unweighted BCE on balanced hidden representations",
                 "method": "Direct Binary",
                 **metrics
             }
@@ -545,6 +541,21 @@ def main():
         results.append(
             {
                 "seed": seed,
+                "head_seed": seed,
+                "model_seed": representation["training_seed"],
+                "training_seed": representation["training_seed"],
+                "representation_seed": representation["training_seed"],
+                "split_seed": representation["split_seed"],
+                "dataset_sha256": representation["dataset_sha256"],
+                "preprocessing_version": representation["preprocessing_version"],
+                "balancing_method": representation["balancing_method"],
+                "experiment_type": "fixed_representation_head_seed_variability",
+                "representation_path": str(representation_path),
+                "original_train_class_counts": json.dumps(provenance["original_train_class_counts"], sort_keys=True),
+                "resampled_train_class_counts": json.dumps(provenance["resampled_train_class_counts"], sort_keys=True),
+                "validation_class_counts": json.dumps(provenance["validation_class_counts"], sort_keys=True),
+                "test_class_counts": json.dumps(provenance["test_class_counts"], sort_keys=True),
+                "loss_configuration": "unweighted BCE on balanced hidden representations",
                 "method": "STE Binary",
                 **metrics
             }
@@ -597,6 +608,21 @@ def main():
         results.append(
             {
                 "seed": seed,
+                "head_seed": seed,
+                "model_seed": representation["training_seed"],
+                "training_seed": representation["training_seed"],
+                "representation_seed": representation["training_seed"],
+                "split_seed": representation["split_seed"],
+                "dataset_sha256": representation["dataset_sha256"],
+                "preprocessing_version": representation["preprocessing_version"],
+                "balancing_method": representation["balancing_method"],
+                "experiment_type": "fixed_representation_head_seed_variability",
+                "representation_path": str(representation_path),
+                "original_train_class_counts": json.dumps(provenance["original_train_class_counts"], sort_keys=True),
+                "resampled_train_class_counts": json.dumps(provenance["resampled_train_class_counts"], sort_keys=True),
+                "validation_class_counts": json.dumps(provenance["validation_class_counts"], sort_keys=True),
+                "test_class_counts": json.dumps(provenance["test_class_counts"], sort_keys=True),
+                "loss_configuration": "QUBO squared-error objective on balanced hidden representations",
                 "method": "QUBO Binary",
                 "alpha": alpha,
                 **metrics
@@ -614,10 +640,7 @@ def main():
 
     df = pd.DataFrame(results)
 
-    df.to_csv(
-        "data/stroke_binary_head_multiseed.csv",
-        index=False
-    )
+    df.to_csv(output_path, index=False)
 
     print()
     print("=" * 60)
@@ -652,9 +675,7 @@ def main():
 
     print(summary)
 
-    summary.to_csv(
-        "data/stroke_binary_head_multiseed_summary.csv"
-    )
+    summary.to_csv(summary_path)
 
     print()
     print(
@@ -662,13 +683,19 @@ def main():
     )
 
     print(
-        "data/stroke_binary_head_multiseed.csv"
+        output_path
     )
 
     print(
-        "data/stroke_binary_head_multiseed_summary.csv"
+        summary_path
     )
 
 
 if __name__ == "__main__":
-    main()
+    parser = argparse.ArgumentParser(description="Measure binary-head initialization variability on one fixed DFA representation")
+    parser.add_argument("--representation", default=str(DATA_DIR / "stroke_dfa_representation_seed_42.pt"))
+    parser.add_argument("--seeds", type=int, nargs="+", default=SEEDS)
+    parser.add_argument("--output", default=str(DATA_DIR / "stroke_binary_head_multiseed.csv"))
+    parser.add_argument("--overwrite", action="store_true")
+    args = parser.parse_args()
+    main(args.representation, args.seeds, args.output, args.overwrite)

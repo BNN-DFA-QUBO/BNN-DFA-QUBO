@@ -92,9 +92,8 @@ def train_direct_binary(
 if __name__ == "__main__":
     seed = 42
 
-    representation_path = (
-        f"data/stroke_dfa_representation_seed_{seed}.pt"
-    )
+    from utils.stroke_data import DATA_DIR
+    representation_path = DATA_DIR / f"stroke_dfa_representation_seed_{seed}.pt"
 
     result = train_direct_binary(
         representation_path,

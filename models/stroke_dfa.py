@@ -15,15 +15,8 @@ class StrokeDFA:
 
 class StrokeDFAFunction:
     @staticmethod
-    def output_error(logits, labels, pos_weight):
+    def output_error(logits, labels):
         probabilities = torch.sigmoid(logits)
-
-        error = probabilities - labels
-
-        error = torch.where(
-            labels == 1,
-            error * pos_weight,
-            error
-        )
-
-        return error
+        # Gradient of mean BCEWithLogitsLoss; the caller divides by batch size
+        # before forming weight and bias gradients.
+        return probabilities - labels
