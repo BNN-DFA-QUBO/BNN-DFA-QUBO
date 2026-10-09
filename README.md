@@ -162,3 +162,43 @@ BNN-DFA-QUBO/
 ├── pyproject.toml
 ├── requirements.txt
 └── README.md
+
+## Stroke prediction experiments
+
+The stroke pipeline downloads the public Fedesoriano Kaggle dataset locally. A raw CSV already present at `data/stroke/healthcare-dataset-stroke-data.csv` is preserved by default.
+
+Run these commands from the repository root after installing `requirements.txt`:
+
+```powershell
+# Download; refuses to replace an existing local CSV.
+python -m experiments.stroke_experiments.download_stroke
+# To replace an existing local CSV intentionally, use:
+# python -m experiments.stroke_experiments.download_stroke --overwrite
+
+# Create deterministic stratified 70/15/15 splits, fit preprocessing, and balance train only.
+python -m experiments.stroke_experiments.process_stroke --seed 42
+
+# BNN trained with backpropagation.
+python -m experiments.stroke_experiments.stroke_bnn_bp
+
+# DFA representation, followed by all five DFA heads and a result summary.
+python -m experiments.stroke_experiments.run_stroke_controlled
+
+# Individual DFA representation and head workflows (after process_stroke).
+python -m experiments.stroke_experiments.stroke_bnn_dfa
+python -m experiments.stroke_experiments.stroke_real_ls
+python -m experiments.stroke_experiments.stroke_dfa_binarized_ls
+python -m experiments.stroke_experiments.stroke_dfa_direct_binary
+python -m experiments.stroke_experiments.stroke_dfa_ste_binary
+python -m experiments.stroke_experiments.stroke_dfa_qubo
+python -m experiments.stroke_experiments.stroke_dfa_least_squares
+
+# Optional multi-seed binary-head comparison.
+python -m experiments.stroke_experiments.stroke_binary_head_multiseed
+```
+
+The data directory is ignored by Git. Set `STROKE_DATA_DIR` to choose another local data/artifact directory, or `STROKE_CSV` to point at an existing raw CSV. `STROKE_SPLIT_SEED` controls the default split seed; `process_stroke --seed` selects the processing seed. The processor writes `metadata.json` (dataset hash, row IDs per split, feature order and dynamic class counts) and `preprocessor.joblib` under `STROKE_DATA_DIR`. Each training call recreates deterministic splits and fits every transform on training rows only, then applies the fitted transforms to validation and test.
+
+Feature engineering retains the ZIP choices: grouped work types, cardiovascular comorbidity, age/glucose interaction, glucose risk tier, metabolic syndrome flag, KNN imputation, Yeo–Johnson transforms, and one-hot categorical inputs. Input width is validated from the saved feature list (23 for the supplied schema). The ZIP's ordinary SMOTE plus rounding can create impossible multi-hot category groups, so this implementation balances only training data through exact minority-row duplication. That preserves binary and one-hot semantics and records original and balanced counts plus the method in metadata. Validation and test are untouched.
+
+The DFA heads consume labels saved alongside their representations, avoiding independently regenerated split labels. Validation selects thresholds; test is used only for final reported metrics. The ZIP's CSVs and plots are reference artifacts and remain outside tracked source files.

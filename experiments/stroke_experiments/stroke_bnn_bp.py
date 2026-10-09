@@ -7,6 +7,7 @@ sys.path.append(
 
 import torch
 import torch.nn as nn
+import json
 from torch.utils.data import DataLoader, TensorDataset
 from sklearn.metrics import balanced_accuracy_score
 
@@ -14,12 +15,13 @@ from models.stroke_bnn import StrokeBNN
 from utils.stroke_data import prepare_stroke_data
 from utils.seed import set_seed
 from utils.stroke_config import (
-    INPUT_SIZE,
     HIDDEN_SIZE,
     BATCH_SIZE,
     TRAIN_EPOCHS,
     LEARNING_RATE
 )
+from utils.stroke_metrics import find_best_threshold, calculate_metrics
+from utils.stroke_data import load_stroke_metadata
 
 
 def get_device():
@@ -94,7 +96,7 @@ def train_bnn_bp(seed):
     )
 
     model = StrokeBNN(
-        input_size=INPUT_SIZE,
+        input_size=X_train.shape[1],
         hidden_size=HIDDEN_SIZE
     ).to(device)
 
@@ -171,6 +173,20 @@ def train_bnn_bp(seed):
     model.eval()
 
     with torch.no_grad():
+        val_scores = torch.sigmoid(model(X_val_tensor)).cpu().numpy()
+        test_scores = torch.sigmoid(model(torch.tensor(X_test.values, dtype=torch.float32, device=device))).cpu().numpy()
+    threshold, validation_ba = find_best_threshold(y_val.values, val_scores)
+    test_metrics = calculate_metrics(y_test.values, test_scores, threshold)
+    metadata = load_stroke_metadata()
+    result_path = f"data/stroke_bnn_bp_seed_{seed}.json"
+    with open(result_path, "w", encoding="utf-8") as f:
+        json.dump({"model": "BNN backpropagation", "seed": seed, "validation_balanced_accuracy": validation_ba,
+                   "split_class_counts": {"train_original": metadata["original_train_class_counts"],
+                                          "train_resampled": metadata["resampled_train_class_counts"],
+                                          "validation": metadata["validation_class_counts"],
+                                          "test": metadata["test_class_counts"]}, **test_metrics}, f, indent=2)
+
+    with torch.no_grad():
         H_train = torch.relu(
             model.fc1(
                 torch.tensor(
@@ -208,7 +224,10 @@ def train_bnn_bp(seed):
         "H_test": H_test,
         "y_train": y_train,
         "y_val": y_val,
-        "y_test": y_test
+        "y_test": y_test,
+        "test_metrics": test_metrics,
+        "validation_balanced_accuracy": validation_ba,
+        "metrics_path": result_path
     }
 
 
@@ -232,3 +251,4 @@ if __name__ == "__main__":
     print(
         f"H_test shape: {result['H_test'].shape}"
     )
+    print(f"Test metrics: {result['test_metrics']}")

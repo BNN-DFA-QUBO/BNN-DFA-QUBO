@@ -12,7 +12,7 @@ from sklearn.metrics import (
 
 
 representation_path = (
-    "data/stroke_dfa_representation.pt"
+    "data/stroke_dfa_representation_seed_42.pt"
 )
 
 

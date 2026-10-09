@@ -19,7 +19,7 @@ class BinaryLinear(nn.Linear):
 
 
 class StrokeBNN(nn.Module):
-    def __init__(self, input_size=21, hidden_size=64):
+    def __init__(self, input_size, hidden_size=64):
         super().__init__()
 
         self.fc1 = BinaryLinear(input_size, hidden_size)

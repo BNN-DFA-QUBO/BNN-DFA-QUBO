@@ -7,6 +7,7 @@ sys.path.append(
 
 import torch
 import torch.nn as nn
+import json
 from torch.utils.data import DataLoader, TensorDataset
 from sklearn.metrics import balanced_accuracy_score
 
@@ -14,9 +15,10 @@ from models.stroke_bnn import StrokeBNN
 from models.stroke_dfa import StrokeDFA, StrokeDFAFunction
 from utils.stroke_data import prepare_stroke_data
 from utils.stroke_representation import save_representation
+from utils.stroke_data import load_stroke_metadata
+from utils.stroke_metrics import find_best_threshold, calculate_metrics
 from utils.seed import set_seed
 from utils.stroke_config import (
-    INPUT_SIZE,
     HIDDEN_SIZE,
     BATCH_SIZE,
     TRAIN_EPOCHS,
@@ -96,7 +98,7 @@ def train_dfa(seed):
     )
 
     model = StrokeBNN(
-        input_size=INPUT_SIZE,
+        input_size=X_train.shape[1],
         hidden_size=HIDDEN_SIZE
     ).to(device)
 
@@ -221,6 +223,21 @@ def train_dfa(seed):
     model.eval()
 
     with torch.no_grad():
+        val_scores = torch.sigmoid(model(X_val_tensor)).cpu().numpy()
+        test_scores = torch.sigmoid(model(torch.tensor(X_test.values, dtype=torch.float32, device=device))).cpu().numpy()
+    threshold, validation_ba = find_best_threshold(y_val.values, val_scores)
+    test_metrics = calculate_metrics(y_test.values, test_scores, threshold)
+    metadata = load_stroke_metadata()
+    result_path = f"data/stroke_bnn_dfa_seed_{seed}.json"
+    with open(result_path, "w", encoding="utf-8") as f:
+        json.dump({"model": "BNN DFA output", "seed": seed, "threshold": threshold,
+                   "validation_balanced_accuracy": validation_ba,
+                   "split_class_counts": {"train_original": metadata["original_train_class_counts"],
+                                          "train_resampled": metadata["resampled_train_class_counts"],
+                                          "validation": metadata["validation_class_counts"],
+                                          "test": metadata["test_class_counts"]}, **test_metrics}, f, indent=2)
+
+    with torch.no_grad():
         X_train_device = torch.tensor(
             X_train.values,
             dtype=torch.float32,
@@ -256,6 +273,9 @@ def train_dfa(seed):
         "H_val": H_val,
         "H_test": H_test,
         "feature_names": list(X_train.columns),
+        "data_metadata": load_stroke_metadata(),
+        "test_metrics": test_metrics,
+        "validation_balanced_accuracy": validation_ba,
         "y_train": y_train,
         "y_val": y_val,
         "y_test": y_test

@@ -18,10 +18,10 @@ from sklearn.metrics import (
     recall_score,
     f1_score,
     roc_auc_score,
-    average_precision_score
+    average_precision_score,
+    confusion_matrix,
 )
 
-from utils.stroke_data import prepare_stroke_data
 
 
 SEEDS = [42, 123, 2024, 7, 99]
@@ -41,7 +41,7 @@ def set_seed(seed):
 
 def load_data():
     representation = torch.load(
-        "data/stroke_dfa_representation.pt",
+        "data/stroke_dfa_representation_seed_42.pt",
         map_location="cpu"
     )
 
@@ -49,29 +49,13 @@ def load_data():
     H_val = representation["H_val"].float()
     H_test = representation["H_test"].float()
 
-    (
-        _,
-        _,
-        _,
-        y_train,
-        y_val,
-        y_test
-    ) = prepare_stroke_data()
-
-    y_train = torch.tensor(
-        y_train.to_numpy(),
-        dtype=torch.float32
-    )
-
-    y_val = torch.tensor(
-        y_val.to_numpy(),
-        dtype=torch.long
-    )
-
-    y_test = torch.tensor(
-        y_test.to_numpy(),
-        dtype=torch.long
-    )
+    # Labels are stored with the representations so a separately regenerated split
+    # can never silently misalign examples and learned features.
+    y_train = representation["y_train"].float()
+    y_val = representation["y_val"].long()
+    y_test = representation["y_test"].long()
+    if not (len(H_train) == len(y_train) and len(H_val) == len(y_val) and len(H_test) == len(y_test)):
+        raise ValueError("Representation rows and embedded labels are misaligned")
 
     return (
         H_train,
@@ -119,6 +103,7 @@ def evaluate(
     y = y_true.numpy()
     p = predictions.numpy()
     s = scores.numpy()
+    tn, fp, fn, tp = confusion_matrix(y, p, labels=[0, 1]).ravel()
 
     return {
         "balanced_accuracy":
@@ -149,7 +134,9 @@ def evaluate(
             roc_auc_score(y, s),
 
         "pr_auc":
-            average_precision_score(y, s)
+            average_precision_score(y, s),
+        "tn": int(tn), "fp": int(fp), "fn": int(fn), "tp": int(tp),
+        "threshold": float(threshold)
     }
 
 
