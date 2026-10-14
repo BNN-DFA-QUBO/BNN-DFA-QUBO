@@ -1,217 +1,252 @@
-BNN-DFA-QUBO
+# BNN-DFA-QUBO
 
-A research project investigating the combination of Binary Neural
-Networks (BNNs), Direct Feedback Alignment (DFA), and a
-QUBO/Ising-based binary classifier head on the MNIST dataset.
+Research code for comparing Binarized Neural Networks (BNNs), Direct Feedback Alignment (DFA), and classifier heads, including least-squares (LS), binary, straight-through estimator (STE), and QUBO/Ising heads.
 
-The repository contains a sequence of experiments that progressively
-compare standard neural networks, BNNs trained with backpropagation,
-BNNs trained using DFA, different binary classifier heads, and finally a
-QUBO/Ising classifier optimized using simulated annealing.
+This repository contains **two distinct experiment tracks**:
 
-Procedure to run the project:
+- **MNIST:** ten-class digit classification with BNN backpropagation, DFA, LS-derived heads, STE, and QUBO.
+- **Stroke:** binary stroke prediction with saved preprocessing metadata, stratified train/validation/test splits, optional training-only class balancing, and five DFA classifier heads.
 
-1. Clone
+Run commands from the repository root. Generated data, representations, and experiment outputs are local files and are not committed by default.
 
+## 1. Set up the environment
+
+Use a Python interpreter compatible with the pinned PyTorch and torchvision versions in `requirements.txt`. A virtual environment is recommended.
+
+### Windows PowerShell
+
+```powershell
 git clone https://github.com/BNN-DFA-QUBO/BNN-DFA-QUBO.git
 cd BNN-DFA-QUBO
 
-2. Create and activate a virtual environment
-
-Windows PowerShell
-
-python -m venv venv
-.\venv\Scripts\Activate.ps1
-
-Windows Command Prompt
-
-python -m venv venv
-venv\Scripts\activate.bat
-
-Linux / macOS
-
-python3 -m venv venv
-source venv/bin/activate
-
-3. Install dependencies
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
 
 python -m pip install --upgrade pip
 python -m pip install -r requirements.txt
 python -m pip install -e .
-
-4. Verify the setup
-
-python -c "import utils; import models; print('Project imports: OK')"
-python -m experiments.test_data
-
-MNIST downloads automatically into data/MNIST/raw/ when needed.
-
-5. Run experiments
-
-Run all commands from the repository root.
-
-Standard ANN
-
-python -m experiments.baseline_ann
-
-BNN + Backpropagation
-
-python -m experiments.bnn_bp
-
-BNN + DFA
-
-python -m experiments.bnn_dfa
-
-DFA + Least-Squares Head
-
-python -m experiments.dfa_least_squares
-
-DFA + Binary Least-Squares Head
-
-python -m experiments.dfa_binary_head
-
-DFA + Tanh Binary Head
-
-python -m experiments.dfa_direct_binary_head
-
-DFA + STE Binary Head
-
-python -m experiments.dfa_binary_head_ste
-
-DFA + QUBO Binary Head
-
-python -m experiments.bnn_dfa_qubo
-
-6. Recommended order
-
-python -m experiments.MNIST_experiments.test_data
-python -m experiments.MNIST_experiments.baseline_ann
-python -m experiments.MNIST_experiments.bnn_bp
-python -m experiments.MNIST_experiments.bnn_dfa
-python -m experiments.MNIST_experiments.dfa_least_squares
-python -m experiments.MNIST_experiments.dfa_binary_head
-python -m experiments.MNIST_experiments.dfa_direct_binary_head
-python -m experiments.MNIST_experiments.dfa_binary_head_ste
-python -m experiments.MNIST_experiments.bnn_dfa_qubo
-
-
-To run an experiment with a specific seed:
-
-python -m experiments.MNIST_experiments.baseline_ann --seed 123
-python -m experiments.MNIST_experiments.bnn_bp --seed 123
-python -m experiments.MNIST_experiments.bnn_dfa --seed 123
-python -m experiments.MNIST_experiments.dfa_least_squares --seed 123
-python -m experiments.MNIST_experiments.dfa_binary_head --seed 123
-python -m experiments.MNIST_experiments.dfa_direct_binary_head --seed 123
-python -m experiments.MNIST_experiments.dfa_binary_head_ste --seed 123
-python -m experiments.MNIST_experiments.bnn_dfa_qubo --seed 123
-
-
-7. Cross-platform reproducibility protocol
-
-The repository includes a separate reproducibility layer for comparing
-experiments across platforms such as NVIDIA CUDA, Apple MPS, and CPU.
-
-7.1 Verify the protocol
-
-Before running the experiments, verify that the protocol is complete and
-valid:
-
-python -m reproducibility.verify_protocol
-
-The verification checks the manifest, test indices, and every training
-epoch permutation.
-
-7.2 Run an experiment with the reproducibility protocol
-
-python -m reproducibility.runner baseline_ann
-python -m reproducibility.runner bnn_bp
-python -m reproducibility.runner bnn_dfa
-python -m reproducibility.runner dfa_least_squares
-python -m reproducibility.runner dfa_binary_head
-python -m reproducibility.runner dfa_direct_binary_head
-python -m reproducibility.runner dfa_binary_head_ste
-python -m reproducibility.runner bnn_dfa_qubo
-
-The purpose of this procedure is to isolate platform-dependent numerical
-differences by controlling the experimental inputs and training order.
-It does not guarantee bit-for-bit identical training results across
-different hardware backends. Small numerical differences can still occur
-because CUDA, MPS, and CPU use different kernels and floating-point
-execution paths.
-
-
-Project structure
-
-BNN-DFA-QUBO/
-├── experiments/
-├── models/
-├── utils/
-├── reproducibility/
-│   ├── deterministic.py
-│   ├── fixed_data.py
-│   ├── generate_protocol.py
-│   ├── protocol_loader.py
-│   ├── runner.py
-│   └── verify_protocol.py
-├── protocol/
-│   ├── manifest.json
-│   ├── test_indices.npy
-│   └── train/
-├── data/
-├── pyproject.toml
-├── requirements.txt
-└── README.md
-
-## Stroke prediction experiments
-
-The stroke pipeline downloads the public Fedesoriano Kaggle dataset (`fedesoriano/stroke-prediction-dataset`) through KaggleHub. Public dataset downloads do not ordinarily need Kaggle credentials. A raw CSV already present at `data/stroke/healthcare-dataset-stroke-data.csv` is preserved by default; replacing it requires the explicit `--overwrite` flag.
-
-Run these commands from the repository root after installing `requirements.txt`:
-
-```powershell
-# Download; refuses to replace an existing local CSV.
-python -m experiments.stroke_experiments.download_stroke
-# To replace an existing local CSV intentionally, use:
-# python -m experiments.stroke_experiments.download_stroke --overwrite
-
-# Create deterministic stratified 70/15/15 splits, fit preprocessing, and balance train only.
-python -m experiments.stroke_experiments.process_stroke --seed 42
-# Optional: write preprocessing artifacts to a specific directory.
-# python -m experiments.stroke_experiments.process_stroke --seed 42 --output-dir data/stroke_run_42
-
-# BNN trained with backpropagation (ordinary unweighted mean BCEWithLogitsLoss).
-python -m experiments.stroke_experiments.stroke_bnn_bp
-
-# Fixed split, multiple BNN/DFA training seeds, then all five heads per representation.
-python -m experiments.stroke_experiments.run_stroke_controlled --split-seed 42 --seeds 42 123 2024 7 99
-# To intentionally replace generated representations/results on a rerun, add --overwrite.
-# python -m experiments.stroke_experiments.run_stroke_controlled --split-seed 42 --seeds 42 123 2024 7 99 --overwrite
-
-# Individual DFA representation and head workflows (after process_stroke).
-python -m experiments.stroke_experiments.stroke_bnn_dfa
-python -m experiments.stroke_experiments.stroke_real_ls
-python -m experiments.stroke_experiments.stroke_dfa_binarized_ls
-python -m experiments.stroke_experiments.stroke_dfa_direct_binary
-python -m experiments.stroke_experiments.stroke_dfa_ste_binary
-python -m experiments.stroke_experiments.stroke_dfa_qubo
-python -m experiments.stroke_experiments.stroke_dfa_least_squares
-
-#If you want to run above codes again use --overwrite at the end of each one
-
-# Optional multi-seed binary-head comparison.
-python -m experiments.stroke_experiments.stroke_binary_head_multiseed
-
-# Run focused scientific-invariant tests (synthetic fixtures; no download required).
-python -m unittest experiments.stroke_experiments.test_stroke_preprocessing
 ```
 
-The data directory is ignored by Git. Set `STROKE_DATA_DIR` to choose another local data/artifact directory, `STROKE_CSV` to point at an existing raw CSV, or `STROKE_SPLIT_SEED` to set the default split seed. The split seed is separate from each BNN/DFA model seed: use `--split-seed` to vary partitions, and `--seeds` to compare model-training seeds on one fixed partition. The controlled runner prepares the requested split before training. It writes `metadata.json` (raw SHA-256, split policy and seed, row IDs per split, feature order, schema/config hashes, runtime library versions, and dynamic class counts) and `preprocessor.joblib` under `STROKE_DATA_DIR`. Matching artifacts are reused only after validation. Stale or incompatible artifacts fail clearly; pass `process_stroke --overwrite` or the controlled runner's `--overwrite` to regenerate them. Existing result files are also protected from accidental replacement. `process_stroke --output-dir` selects a specific artifact directory and reports that path.
+If PowerShell blocks virtual-environment activation, use the activation guidance from your local Python installation or activate the environment in Command Prompt:
 
-Preprocessing follows the FinalBoss definitions and feature order: binary gender/marital/residence fields; age, hypertension, heart disease, glucose, BMI; cardiovascular comorbidity; raw age/glucose interaction; glucose risk tier; metabolic syndrome flag; grouped-work and smoking one-hot columns; and Yeo–Johnson versions of glucose, BMI, and the interaction. KNN imputation is fitted on training rows using age, gender, glucose, hypertension, heart disease, and BMI. These inputs remain on their raw scales to match the supplied specification; Euclidean distance therefore gives larger-range glucose, age, and BMI values more influence than 0/1 indicators. No rescaling is introduced without a supporting project specification. Input width comes from the fitted feature names (23 columns for the supplied dataset), not a model constant. The single `gender == Other` row is excluded before splitting while its ID remains auditable in the source file. All learned imputers, encoders, and power transforms are fitted on train only and reused unchanged for validation/test.
+```bat
+.venv\Scripts\activate.bat
+```
 
-Balancing is explicit: `random_oversample` duplicates minority training rows exactly and does not synthesize records. The supplied FinalBoss script uses ordinary SMOTE followed by rounding encoded category flags, which can make invalid multi-hot combinations; the project therefore retains exact-row random oversampling as its documented alternative. Original and post-balancing counts and method are stored in metadata. Validation and test are never resampled and retain their imbalanced class distribution. Set `STROKE_BALANCING_METHOD=none` or pass `--balancing none` to compare without balancing. BNN backprop and DFA use ordinary mean `BCEWithLogitsLoss` with no `pos_weight`; the DFA output error is scaled by batch size to match that mean reduction.
+### Linux / macOS
 
-Saved representations include training seed, split seed, preprocessing/schema version, raw-data hash, config hash, feature names, and aligned labels/row IDs. Old or incompatible representations are rejected by head loaders. The `run_stroke_controlled` output is an end-to-end comparison: each model seed trains one DFA representation, and all five heads for that seed use it and its saved labels. Its methods are distinct variants: Real LS fits `{0,1}` targets with an intercept; Binarized LS signs the fitted weights and retains the intercept; Direct Binary uses the sign of the class-mean difference with zero bias; STE Binary uses Adam with a straight-through binary weight and mean squared error on `{-1,+1}` targets, with learned bias; QUBO uses a signed-target squared-error objective and simulated annealing, with recovered bias. Validation selects thresholds; test is reserved for final metrics.
+```bash
+git clone https://github.com/BNN-DFA-QUBO/BNN-DFA-QUBO.git
+cd BNN-DFA-QUBO
 
-`stroke_binary_head_multiseed` writes a separate fixed-representation head-seed variability result set; it does not represent end-to-end BNN/DFA seed variability and must not be pooled with the controlled runner as the same experiment. Its Direct Binary variant greedily flips weight signs to improve BCE on `{0,1}` labels, unlike the controlled class-mean rule. Its STE variant uses mean BCE on `{0,1}` labels with Adam and learned bias, unlike the controlled signed-target MSE variant. Its QUBO variant uses signed-target squared error. Each output row records experiment type, variant, objective, target encoding, bias treatment, and optimization procedure. `stroke_real_ls` fits `{0,1}` targets; `stroke_dfa_least_squares` intentionally fits signed `{-1,+1}` targets with an intercept using `torch.linalg.lstsq`. The included tests cover split/provenance integrity, feature engineering, training-only fit, valid resampling, stale artifacts, all five heads, DFA BCE-gradient scaling, and rank-deficient least squares. ZIP CSVs and plots remain reference artifacts, not inputs to model runs.
+python3 -m venv .venv
+source .venv/bin/activate
+
+python -m pip install --upgrade pip
+python -m pip install -r requirements.txt
+python -m pip install -e .
+```
+
+### Verify the installation
+
+```powershell
+python -c "import torch, torchvision, numpy, pandas; import models, utils; print('Imports OK'); print('PyTorch:', torch.__version__)"
+python -m experiments.MNIST_experiments.test_data
+python -m unittest experiments.stroke_experiments.test_stroke_preprocessing
+python -m unittest experiments.stroke_experiments.test_stroke_ls_heads
+```
+
+The MNIST data loader downloads MNIST the first time it is used. The Stroke pipeline downloads its CSV in the separate step described below.
+
+## 2. MNIST experiments
+
+### Run individual models
+
+Run each command from the repository root:
+
+```powershell
+# Standard ANN
+python -m experiments.MNIST_experiments.baseline_ann --seed 42
+
+# BNN trained with backpropagation
+python -m experiments.MNIST_experiments.bnn_bp --seed 42
+
+# BNN trained with Direct Feedback Alignment
+python -m experiments.MNIST_experiments.bnn_dfa --seed 42
+
+# DFA with a real-valued least-squares head
+python -m experiments.MNIST_experiments.dfa_least_squares --seed 42
+
+# DFA with a binarized LS-derived head
+python -m experiments.MNIST_experiments.dfa_binary_head --seed 42
+
+# Direct binary head
+python -m experiments.MNIST_experiments.dfa_direct_binary_head --seed 42
+
+# Straight-through estimator binary head
+python -m experiments.MNIST_experiments.dfa_binary_head_ste --seed 42
+
+# QUBO / Ising binary head
+python -m experiments.MNIST_experiments.bnn_dfa_qubo --seed 42
+```
+
+The main classifier-head scripts currently use the numerically stable Ridge-LS implementation by default on this feature branch. Use the legacy switches when reproducing the original implementation:
+
+```powershell
+# Original float32 torch.linalg.lstsq implementation for real LS
+python -m experiments.MNIST_experiments.dfa_least_squares --seed 42 --ls-solver legacy
+
+# Original LS initializer / bias treatment for the binarized LS head
+python -m experiments.MNIST_experiments.dfa_binary_head --seed 42 --ls-solver legacy
+
+# Original QUBO scale initialization
+python -m experiments.MNIST_experiments.bnn_dfa_qubo --seed 42 --qubo-scale-solver legacy
+```
+
+The Ridge-LS solver uses CPU float64 and an augmented SVD-based least-squares system, leaves the intercept unregularized, and avoids normal equations. The binarized Ridge-LS variant separately refits its class-specific scale and bias after weight sign binarization. Those are algorithmically distinct variants; compare the result labels instead of combining them under one generic LS name.
+
+### Controlled multi-seed MNIST runs
+
+```powershell
+python -m experiments.MNIST_experiments.run_mnist_controlled --seeds 42 123 456 789 999 --experiments dfa_least_squares dfa_binary_head bnn_dfa_qubo
+```
+
+This controlled runner produces a per-run CSV and a summary CSV under `data/`. Review the script before rerunning if those named outputs already exist, because the controlled-run files are written to their configured paths.
+
+### Keep diagnostic outputs separate
+
+Most individual MNIST scripts append to `data/results/mnist_results.csv`. To send new diagnostic runs to another file, set `BNN_DFA_RESULTS_CSV` before launching the command.
+
+```powershell
+$stamp = Get-Date -Format "yyyyMMdd_HHmmss"
+$env:BNN_DFA_RESULTS_CSV = "data/results_diagnostic/mnist_$stamp.csv"
+
+python -m experiments.MNIST_experiments.dfa_least_squares --seed 42
+python -m experiments.MNIST_experiments.dfa_binary_head --seed 42
+python -m experiments.MNIST_experiments.bnn_dfa_qubo --seed 42
+
+Remove-Item Env:BNN_DFA_RESULTS_CSV
+```
+
+This environment variable redirects those scripts' result logging. It does not redirect every custom diagnostic or the Stroke runner, which save their outputs separately.
+
+## 3. Stroke experiments
+
+### Download and prepare the data
+
+The downloader retrieves the public Fedesoriano Stroke Prediction Dataset through KaggleHub. A CSV already present locally is protected from accidental replacement.
+
+```powershell
+python -m experiments.stroke_experiments.download_stroke
+python -m experiments.stroke_experiments.process_stroke --seed 42 --balancing random_oversample
+```
+
+The preprocessing flow creates stratified 70/15/15 train/validation/test splits, fits learned preprocessing on the training split only, and applies optional balancing to training rows only. Validation and test remain imbalanced. The saved metadata records the raw-data hash, split seed, feature names/order, preprocessing configuration, class counts, and other provenance information.
+
+The standard paths are controlled by these environment variables:
+
+- `STROKE_DATA_DIR`: local directory for preprocessing artifacts and representations; defaults to `data/stroke`.
+- `STROKE_CSV`: path to the raw Stroke CSV; defaults to `data/stroke/healthcare-dataset-stroke-data.csv`.
+- `STROKE_SPLIT_SEED`: default split seed; defaults to `42`.
+- `STROKE_BALANCING_METHOD`: default training balancing method; defaults to `random_oversample`.
+
+### Run the complete controlled comparison
+
+```powershell
+python -m experiments.stroke_experiments.run_stroke_controlled --split-seed 42 --seeds 42 123 2024 7 99 --balancing random_oversample
+```
+
+Each model seed trains a DFA representation; all classifier heads for that seed use the same saved representation. Metrics include balanced accuracy, precision, recall, F1, ROC-AUC, PR-AUC, and confusion-matrix counts. The output records the representation seed, split seed, data/preprocessing provenance, target encoding, objective, and bias treatment.
+
+**Rerun protection:** the controlled runner refuses to replace existing representation, model, or result files unless `--overwrite` is supplied. Only use `--overwrite` when you intend to replace those artifacts. For isolated runs, pass a new nested `--output-dir`, for example `data/stroke_runs/run_20261014/stroke`; the runner stores its CSV beside that output directory.
+
+### Stroke LS variants
+
+The existing Stroke Real-LS path is an unregularized NumPy least-squares fit with `{0,1}` targets. The candidate Ridge LS path uses the shared float64 augmented SVD solver with regularization. The Stroke Ridge-Binarized-LS candidate also refits the scale and intercept after binarization. These changes are not assumed to be improvements merely because Ridge LS helped in an MNIST experiment.
+
+For a saved representation:
+
+```powershell
+# Existing legacy binarized LS implementation (default pending corrected validation)
+python -m experiments.stroke_experiments.stroke_dfa_binarized_ls --representation data/stroke/stroke_dfa_representation_seed_42.pt --ls-solver legacy
+
+# Candidate stable Ridge-LS weights and refitted scale/bias
+python -m experiments.stroke_experiments.stroke_dfa_binarized_ls --representation data/stroke/stroke_dfa_representation_seed_42.pt --ls-solver ridge --lambda-relative 1e-4
+```
+
+The controlled runner supports the same choice:
+
+```powershell
+# Default: preserve historical Stroke result method labels and behavior
+python -m experiments.stroke_experiments.run_stroke_controlled --split-seed 42 --seeds 42 123 2024 7 99 --ls-solver legacy
+
+# Explicitly run the candidate Ridge-binarized head
+python -m experiments.stroke_experiments.run_stroke_controlled --split-seed 42 --seeds 42 123 2024 7 99 --ls-solver ridge
+```
+
+### Paired LS-head validation
+
+This diagnostic compares four LS variants on the same saved representation for each model seed: legacy Real LS, Ridge LS, legacy Binarized LS, and Binarized Ridge LS with scale/bias refitting. The validation split selects the decision threshold; the held-out test split is used only for final metrics. It produces timestamped detailed and aggregate CSV files under `data/results_diagnostic/` and does not overwrite the main Stroke result file.
+
+```powershell
+# Run synthetic tests for the solver and LS-head implementations
+python -m unittest experiments.stroke_experiments.test_stroke_ls_heads
+
+# Reuse existing compatible representations
+python -m experiments.stroke_experiments.validate_stroke_ls_heads --representation-dir data/stroke --seeds 42 123 2024 7 99 --split-seed 42 --balancing random_oversample
+
+# Or train fresh representations and save them to a new timestamped artifact directory
+python -m experiments.stroke_experiments.validate_stroke_ls_heads --seeds 42 123 2024 7 99 --split-seed 42 --balancing random_oversample
+```
+
+Threshold selection evaluates the unique validation-score boundaries, so large gaps or extreme scores do not cause a fixed-grid search to skip useful thresholds. If this diagnostic script changes, rerun it and keep the resulting CSVs distinct; the earlier Stroke validation CSV was generated using a coarser threshold grid and should not be treated as the final comparison.
+
+### Generate Stroke plots
+
+```powershell
+python -m experiments.stroke_experiments.plot_stroke_results
+```
+
+The existing plotting script reads `data/stroke_controlled_results.csv` and writes PNG charts and a summary under `data/stroke_results/`. It plots balanced accuracy, PR-AUC, ROC-AUC, and F1. If the CSV was written to a custom output directory, copy/use the intended CSV path only after checking the plotting script's configured input.
+
+## 4. Cross-platform reproducibility
+
+The repository includes a fixed MNIST data-order protocol intended to control training example order when comparing CPU, CUDA, and Apple MPS runs. It helps isolate sources of variation; it does **not** guarantee bit-for-bit equality across different devices or library versions.
+
+### Verify, then run
+
+```powershell
+python -m reproducibility.verify_protocol
+python -m reproducibility.runner dfa_least_squares
+python -m reproducibility.runner dfa_binary_head
+python -m reproducibility.runner bnn_dfa_qubo
+```
+
+The canonical runner uses the checked-in `protocol/manifest.json`, fixed test indices, and predetermined per-epoch training permutations. Use the same checked-in protocol on every machine. Do not run `python -m reproducibility.generate_protocol` on a second machine: it regenerates the protocol artifacts. Regenerate only intentionally, and then share/commit the new protocol as a single versioned change.
+
+The reproducibility protocol currently targets the MNIST track; Stroke reproducibility instead relies on explicit model seeds, a fixed split seed, validated preprocessing artifacts, representation metadata, and saved dataset/configuration hashes. To strengthen a Stroke comparison, keep the dataset hash, split seed, balancing method, model seeds, preprocessing metadata, package versions, and result CSV together.
+
+## 5. Results, plots, and repository layout
+
+- `results/*.csv`: version-controlled historical/reference result tables.
+- `data/results/mnist_results.csv`: default local log for individual MNIST experiments.
+- `data/mnist_controlled_results.csv` and its summary: output from the controlled MNIST runner.
+- `data/stroke_controlled_results.csv`: default output from the controlled Stroke comparison.
+- `data/stroke_results/*.png`: Stroke metric plots.
+- `data/results_diagnostic/`: timestamped diagnostic CSVs for solver/head validation.
+- `data/stroke/`: raw Stroke CSV, preprocessing artifacts, metadata, and representations.
+
+The `data/` directory is Git-ignored to avoid committing raw datasets, large representations, and generated results by accident. Back up or share the specific result CSVs and plots needed for a review rather than committing all local artifacts.
+
+## 6. Troubleshooting
+
+- **Missing raw data:** run the relevant dataset downloader or allow the MNIST loader to download MNIST.
+- **Stale or mismatched Stroke metadata:** rerun preprocessing with the intended split seed and balancing configuration. Use `--overwrite` only after deciding to replace the saved artifacts.
+- **FileExistsError from a controlled Stroke run:** the run is protecting existing results. Choose a new `--output-dir` or explicitly use `--overwrite` if replacement is intended.
+- **Different accuracies across hardware:** verify the seed, protocol/split, dataset hash, package versions, and method settings first. Hardware-specific floating-point operations can still produce numerical differences.
+
+## 7. Current LS validation status on the feature branch
+
+The stable MNIST Ridge-LS path has been evaluated across multiple seeds. The paired Stroke diagnostic is now being tightened to select thresholds at score boundaries rather than on a fixed linear grid. Until that corrected comparison has been rerun and reviewed, the Stroke controlled runner keeps the legacy Binarized-LS implementation as its default and exposes the Ridge-derived variant through `--ls-solver ridge`. The continuous Stroke Real-LS default remains unchanged.
+
+Do not merge this feature branch into `main` until the corrected Stroke validation, synthetic tests, existing Stroke preprocessing tests, and README commands have been run locally and their results reviewed.
