@@ -83,3 +83,7 @@ htmlcov/
 .env.*
 !.env.example
 bnn_dfa_qubo.egg-info
+
+# Track research summary CSVs while keeping other results ignored
+!results/
+!results/*.csv
