@@ -551,15 +551,6 @@ def evaluate_binary_training_fit(
 # ============================================================
 
 
-    append_result(
-        experiment="dfa_binary_head",
-        method=method_name,
-        seed=seed,
-        test_accuracy=test_accuracy,
-        test_loss=test_loss if "test_loss" in locals() else None,
-        training_time_sec=training_timer.seconds if "training_timer" in locals() else None,
-        parameter_count=count_parameters(model),
-    )
 
 
 if __name__ == "__main__":
@@ -837,7 +828,7 @@ if __name__ == "__main__":
 
     append_result(
         experiment="dfa_binary_head",
-        method="BNN + DFA + Binarized LS Head",
+        method=method_name,
         seed=seed,
         test_accuracy=binary_test_accuracy,
         test_loss=None,
