@@ -1,11 +1,14 @@
-"""Validate the numerically stable LS head on MNIST.
+"""Validate a numerically stable MNIST LS head on an unseen seed.
 
-Trains BNN+DFA once per seed, selects among SVD/ridge heads using a stratified
-validation split of training representations, then evaluates the selected head
-and the legacy default LS head on the test set for a one-time comparison.
+The original MNIST training set is stratified into backbone-fit (80%) and
+validation (20%) subsets BEFORE BNN+DFA training. Validation examples therefore
+do not influence the learned representation. Solver selection uses validation
+accuracy only; the held-out MNIST test set is evaluated after selection.
 
-No existing experiment or CSV is modified. Output: data/results_diagnostic/
-ls_solver_validation_<timestamp>.csv
+This is a diagnostic runner. It does not modify original experiment code or
+existing result CSVs. The validation backbone trains on 80% of the standard
+MNIST training split, so this diagnostic is not a replacement for the paper's
+full-training results.
 """
 from __future__ import annotations
 
@@ -17,15 +20,11 @@ from pathlib import Path
 
 import torch
 import torch.nn.functional as F
+from torch.utils.data import DataLoader, Subset
 
 from models.bnn import BNN
 from models.dfa import DFAClassifier
-from models.ls_heads import (
-    accuracy_from_scores,
-    fit_ridge_classifier,
-    predict_scores,
-    select_ridge_lambda,
-)
+from models.ls_heads import accuracy_from_scores, fit_ridge_classifier, predict_scores
 from utils.MNIST.data import get_mnist_loaders
 from utils.MNIST.seed import set_seed
 from experiments.MNIST_experiments.dfa_least_squares import (
@@ -48,23 +47,10 @@ def pick_device() -> torch.device:
     return torch.device("cpu")
 
 
-def fit_legacy_default(H: torch.Tensor, y: torch.Tensor):
-    """Reproduce original float32/default-driver LS fit; returned weights on CPU."""
-    H32 = H.detach().to(device="cpu", dtype=torch.float32)
-    y = y.detach().to(device="cpu", dtype=torch.long)
-    X = torch.cat(
-        [H32, torch.ones((len(H32), 1), dtype=torch.float32)], dim=1
-    )
-    Y = F.one_hot(y, num_classes=NUM_CLASSES).float()
-    result = torch.linalg.lstsq(X, Y)
-    rank = int(result.rank.max()) if result.rank.numel() else -1
-    return result.solution, rank
-
-
 def stratified_split(
     labels: torch.Tensor, validation_fraction: float, seed: int
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    """Deterministic per-class split, using training labels only."""
+    """Deterministically split indices per class, before model training."""
     labels = labels.detach().cpu().long()
     generator = torch.Generator(device="cpu").manual_seed(seed + 100_003)
     fit_parts, val_parts = [], []
@@ -76,29 +62,63 @@ def stratified_split(
         fit_parts.append(indices[n_val:])
     fit_idx = torch.cat(fit_parts)
     val_idx = torch.cat(val_parts)
-    # Shuffle pooled indices so class blocks do not create an artificial order.
     fit_idx = fit_idx[torch.randperm(len(fit_idx), generator=generator)]
     val_idx = val_idx[torch.randperm(len(val_idx), generator=generator)]
     return fit_idx, val_idx
 
 
+def fit_legacy_default(H: torch.Tensor, y: torch.Tensor):
+    """Original float32 torch.linalg.lstsq default-driver baseline."""
+    H32 = H.detach().to(device="cpu", dtype=torch.float32)
+    y = y.detach().to(device="cpu", dtype=torch.long)
+    X = torch.cat(
+        [H32, torch.ones((len(H32), 1), dtype=torch.float32)], dim=1
+    )
+    Y = F.one_hot(y, num_classes=NUM_CLASSES).float()
+    result = torch.linalg.lstsq(X, Y)
+    rank = int(result.rank.max()) if result.rank.numel() else -1
+    return result.solution, rank
+
+
 def append_rows(path: Path, rows: list[dict]) -> None:
-    if not rows:
-        return
     path.parent.mkdir(parents=True, exist_ok=True)
+    fields = [
+        "seed", "device", "torch_version", "epochs", "train_samples",
+        "validation_samples", "candidate", "lambda_relative", "reported_rank",
+        "validation_accuracy", "test_accuracy", "role", "error",
+        "fit_seconds", "native_bnn_dfa_test_accuracy", "dfa_train_seconds",
+    ]
     with path.open("w", newline="", encoding="utf-8") as f:
-        writer = csv.DictWriter(f, fieldnames=list(rows[0].keys()))
+        writer = csv.DictWriter(f, fieldnames=fields)
         writer.writeheader()
-        writer.writerows(rows)
+        for row in rows:
+            writer.writerow({key: row.get(key, "") for key in fields})
 
 
 def run_seed(seed: int, args) -> list[dict]:
     device = pick_device()
     print(f"\n=== seed={seed} device={device} ===", flush=True)
 
-    # Match the repository experiment's setup order.
+    # Set seed before loaders/model, as the project does.
     set_seed(seed)
-    train_loader, test_loader = get_mnist_loaders(batch_size=64)
+    full_train_loader, test_loader = get_mnist_loaders(batch_size=64)
+    train_dataset = full_train_loader.dataset
+    labels_all = getattr(train_dataset, "targets", None)
+    if labels_all is None:
+        raise RuntimeError("MNIST training dataset does not expose .targets for stratified split")
+
+    fit_idx, val_idx = stratified_split(labels_all, args.validation_fraction, seed)
+    train_loader = DataLoader(
+        Subset(train_dataset, fit_idx.tolist()), batch_size=64, shuffle=True
+    )
+    val_loader = DataLoader(
+        Subset(train_dataset, val_idx.tolist()), batch_size=64, shuffle=False
+    )
+    print(
+        f"Backbone-fit examples: {len(fit_idx)}; held-out validation examples: {len(val_idx)}",
+        flush=True,
+    )
+
     model = BNN().to(device)
     dfa = DFAClassifier(hidden_size=128, output_size=NUM_CLASSES, device=device)
     criterion = torch.nn.CrossEntropyLoss()
@@ -117,76 +137,68 @@ def run_seed(seed: int, args) -> list[dict]:
         )
     dfa_seconds = time.perf_counter() - start
 
-    native_loss, native_test_acc = evaluate_dfa_model(
-        model, test_loader, criterion, device
-    )
+    _, native_test_acc = evaluate_dfa_model(model, test_loader, criterion, device)
     H_train, y_train = collect_hidden_features(model, train_loader, device)
+    H_val, y_val = collect_hidden_features(model, val_loader, device)
     H_test, y_test = collect_hidden_features(model, test_loader, device)
     H_train, y_train = H_train.cpu(), y_train.cpu()
+    H_val, y_val = H_val.cpu(), y_val.cpu()
     H_test, y_test = H_test.cpu(), y_test.cpu()
 
-    fit_idx, val_idx = stratified_split(
-        y_train, args.validation_fraction, seed
-    )
-    H_fit, y_fit = H_train[fit_idx], y_train[fit_idx]
-    H_val, y_val = H_train[val_idx], y_train[val_idx]
+    candidates: list[dict] = []
+    stable_scores: dict[str, float] = {}
+    legacy_rank = ""
+    legacy_fit = None
 
-    rows = []
-    candidates = []
-
-    # Legacy LS is measured as a baseline, but deliberately excluded from
-    # the final candidate selection because this test is evaluating a stable fix.
+    # Legacy LS is a baseline only; it cannot win model selection.
     try:
-        W_legacy_fit, legacy_rank = fit_legacy_default(H_fit, y_fit)
-        legacy_val = accuracy_from_scores(predict_scores(H_val, W_legacy_fit), y_val)
+        legacy_fit, legacy_rank = fit_legacy_default(H_train, y_train)
+        legacy_val = accuracy_from_scores(predict_scores(H_val, legacy_fit), y_val)
         candidates.append({
             "seed": seed, "device": str(device), "torch_version": torch.__version__,
-            "epochs": args.epochs, "split": "stratified training-only",
-            "candidate": "legacy_float32_default", "lambda_relative": "",
-            "reported_rank": legacy_rank, "validation_accuracy": legacy_val,
-            "test_accuracy": "", "role": "baseline_only", "error": "",
+            "epochs": args.epochs, "train_samples": len(y_train),
+            "validation_samples": len(y_val), "candidate": "legacy_float32_default",
+            "lambda_relative": "", "reported_rank": legacy_rank,
+            "validation_accuracy": legacy_val, "test_accuracy": "",
+            "role": "baseline_only", "error": "",
         })
         print(
-            f"legacy float32/default LS: validation={legacy_val:.2f}% "
-            f"rank={legacy_rank}",
+            f"legacy float32/default LS: validation={legacy_val:.2f}% rank={legacy_rank}",
             flush=True,
         )
     except Exception as exc:
-        legacy_val = float("nan")
-        W_legacy_fit = None
-        legacy_rank = ""
         candidates.append({
             "seed": seed, "device": str(device), "torch_version": torch.__version__,
-            "epochs": args.epochs, "split": "stratified training-only",
-            "candidate": "legacy_float32_default", "lambda_relative": "",
-            "reported_rank": "", "validation_accuracy": "",
+            "epochs": args.epochs, "train_samples": len(y_train),
+            "validation_samples": len(y_val), "candidate": "legacy_float32_default",
+            "lambda_relative": "", "reported_rank": "", "validation_accuracy": "",
             "test_accuracy": "", "role": "baseline_only",
             "error": f"{type(exc).__name__}: {exc}",
         })
         print(f"legacy LS failed: {type(exc).__name__}: {exc}", flush=True)
 
-    # Unregularized SVD LS and ridge variants are stable candidates.
-    stable_scores: dict[str, float] = {}
+    # Compare the SVD LS candidate and ridge candidates on the same frozen H.
     try:
         t0 = time.perf_counter()
-        W_svd = fit_ridge_classifier(H_fit, y_fit, NUM_CLASSES, lambda_relative=0.0)
-        svd_val = accuracy_from_scores(predict_scores(H_val, W_svd), y_val)
-        stable_scores["svd_gelsd_rcond_1e-6"] = svd_val
+        W = fit_ridge_classifier(H_train, y_train, NUM_CLASSES, lambda_relative=0.0)
+        val_acc = accuracy_from_scores(predict_scores(H_val, W), y_val)
+        stable_scores["svd_gelsd_rcond_1e-6"] = val_acc
         candidates.append({
             "seed": seed, "device": str(device), "torch_version": torch.__version__,
-            "epochs": args.epochs, "split": "stratified training-only",
-            "candidate": "svd_gelsd_rcond_1e-6", "lambda_relative": 0,
-            "reported_rank": "", "validation_accuracy": svd_val,
-            "test_accuracy": "", "role": "eligible_for_selection",
-            "error": "", "fit_seconds": round(time.perf_counter() - t0, 3),
+            "epochs": args.epochs, "train_samples": len(y_train),
+            "validation_samples": len(y_val), "candidate": "svd_gelsd_rcond_1e-6",
+            "lambda_relative": 0.0, "reported_rank": "",
+            "validation_accuracy": val_acc, "test_accuracy": "",
+            "role": "eligible_for_selection", "error": "",
+            "fit_seconds": round(time.perf_counter() - t0, 3),
         })
-        print(f"SVD LS rcond=1e-6: validation={svd_val:.2f}%", flush=True)
+        print(f"SVD LS rcond=1e-6: validation={val_acc:.2f}%", flush=True)
     except Exception as exc:
         candidates.append({
             "seed": seed, "device": str(device), "torch_version": torch.__version__,
-            "epochs": args.epochs, "split": "stratified training-only",
-            "candidate": "svd_gelsd_rcond_1e-6", "lambda_relative": 0,
-            "reported_rank": "", "validation_accuracy": "",
+            "epochs": args.epochs, "train_samples": len(y_train),
+            "validation_samples": len(y_val), "candidate": "svd_gelsd_rcond_1e-6",
+            "lambda_relative": 0.0, "reported_rank": "", "validation_accuracy": "",
             "test_accuracy": "", "role": "eligible_for_selection",
             "error": f"{type(exc).__name__}: {exc}",
         })
@@ -195,33 +207,34 @@ def run_seed(seed: int, args) -> list[dict]:
         name = f"ridge_{lam:g}"
         t0 = time.perf_counter()
         try:
-            W = fit_ridge_classifier(H_fit, y_fit, NUM_CLASSES, lam)
+            W = fit_ridge_classifier(H_train, y_train, NUM_CLASSES, lam)
             val_acc = accuracy_from_scores(predict_scores(H_val, W), y_val)
             stable_scores[name] = val_acc
             candidates.append({
                 "seed": seed, "device": str(device), "torch_version": torch.__version__,
-                "epochs": args.epochs, "split": "stratified training-only",
-                "candidate": name, "lambda_relative": lam,
-                "reported_rank": "", "validation_accuracy": val_acc,
-                "test_accuracy": "", "role": "eligible_for_selection",
-                "error": "", "fit_seconds": round(time.perf_counter() - t0, 3),
+                "epochs": args.epochs, "train_samples": len(y_train),
+                "validation_samples": len(y_val), "candidate": name,
+                "lambda_relative": lam, "reported_rank": "",
+                "validation_accuracy": val_acc, "test_accuracy": "",
+                "role": "eligible_for_selection", "error": "",
+                "fit_seconds": round(time.perf_counter() - t0, 3),
             })
             print(f"{name}: validation={val_acc:.2f}%", flush=True)
         except Exception as exc:
             candidates.append({
                 "seed": seed, "device": str(device), "torch_version": torch.__version__,
-                "epochs": args.epochs, "split": "stratified training-only",
-                "candidate": name, "lambda_relative": lam,
-                "reported_rank": "", "validation_accuracy": "",
-                "test_accuracy": "", "role": "eligible_for_selection",
+                "epochs": args.epochs, "train_samples": len(y_train),
+                "validation_samples": len(y_val), "candidate": name,
+                "lambda_relative": lam, "reported_rank": "",
+                "validation_accuracy": "", "test_accuracy": "",
+                "role": "eligible_for_selection",
                 "error": f"{type(exc).__name__}: {exc}",
             })
 
     if not stable_scores:
-        raise RuntimeError("No stable LS candidate succeeded. See CSV/error output.")
+        raise RuntimeError("No SVD/ridge candidate succeeded.")
 
-    # Choose only among SVD/ridge candidates, using validation accuracy.
-    # Exact ties prefer stronger ridge, then weaker ridge, then unregularized SVD.
+    # Selection excludes the legacy baseline and uses only held-out validation.
     tie_order = {
         "ridge_0.0001": 0,
         "ridge_1e-06": 1,
@@ -229,34 +242,31 @@ def run_seed(seed: int, args) -> list[dict]:
         "svd_gelsd_rcond_1e-6": 3,
     }
     selected_name = sorted(
-        stable_scores,
-        key=lambda name: (-stable_scores[name], tie_order.get(name, 99)),
+        stable_scores, key=lambda name: (-stable_scores[name], tie_order.get(name, 99))
     )[0]
-    if selected_name == "svd_gelsd_rcond_1e-6":
-        selected_lambda = 0.0
-    else:
-        selected_lambda = float(selected_name.removeprefix("ridge_"))
-
+    selected_lambda = (
+        0.0 if selected_name == "svd_gelsd_rcond_1e-6"
+        else float(selected_name.removeprefix("ridge_"))
+    )
     print(
         f"Selected using validation only: {selected_name} "
         f"({stable_scores[selected_name]:.2f}%)",
         flush=True,
     )
 
-    # Refit both the legacy baseline and selected stable method on all training
-    # representations, then evaluate each once on the held-out test set.
+    # Fit the legacy comparator and selected stable head on the same backbone-fit
+    # representations; test set is not used to select lambda or solver.
     final_rows = []
-    if W_legacy_fit is not None:
-        W_legacy_all, _ = fit_legacy_default(H_train, y_train)
-        legacy_test = accuracy_from_scores(predict_scores(H_test, W_legacy_all), y_test)
+    if legacy_fit is not None:
+        legacy_test = accuracy_from_scores(predict_scores(H_test, legacy_fit), y_test)
         final_rows.append({
             "seed": seed, "device": str(device), "torch_version": torch.__version__,
-            "epochs": args.epochs, "split": "full train refit after validation",
-            "candidate": "legacy_float32_default_full_train",
-            "lambda_relative": "", "reported_rank": legacy_rank,
-            "validation_accuracy": legacy_val, "test_accuracy": legacy_test,
-            "role": "baseline_test_comparison", "error": "",
-            "native_bnn_dfa_test_accuracy": native_test_acc,
+            "epochs": args.epochs, "train_samples": len(y_train),
+            "validation_samples": len(y_val),
+            "candidate": "legacy_float32_default", "lambda_relative": "",
+            "reported_rank": legacy_rank, "validation_accuracy": legacy_val,
+            "test_accuracy": legacy_test, "role": "baseline_test_comparison",
+            "error": "", "native_bnn_dfa_test_accuracy": native_test_acc,
             "dfa_train_seconds": round(dfa_seconds, 2),
         })
         print(f"legacy LS test accuracy: {legacy_test:.2f}%", flush=True)
@@ -267,7 +277,8 @@ def run_seed(seed: int, args) -> list[dict]:
     selected_test = accuracy_from_scores(predict_scores(H_test, W_selected), y_test)
     final_rows.append({
         "seed": seed, "device": str(device), "torch_version": torch.__version__,
-        "epochs": args.epochs, "split": "full train refit after validation",
+        "epochs": args.epochs, "train_samples": len(y_train),
+        "validation_samples": len(y_val),
         "candidate": f"selected_stable:{selected_name}",
         "lambda_relative": selected_lambda, "reported_rank": "",
         "validation_accuracy": stable_scores[selected_name],
@@ -277,17 +288,7 @@ def run_seed(seed: int, args) -> list[dict]:
     })
     print(f"selected stable LS test accuracy: {selected_test:.2f}%", flush=True)
     print(f"native BNN+DFA test accuracy: {native_test_acc:.2f}%", flush=True)
-
-    # Normalize columns so all records append cleanly to one CSV schema.
-    all_rows = candidates + final_rows
-    fields = [
-        "seed", "device", "torch_version", "epochs", "split", "candidate",
-        "lambda_relative", "reported_rank", "validation_accuracy", "test_accuracy",
-        "role", "error", "fit_seconds", "native_bnn_dfa_test_accuracy",
-        "dfa_train_seconds",
-    ]
-    normalized = [{key: row.get(key, "") for key in fields} for row in all_rows]
-    return normalized
+    return candidates + final_rows
 
 
 def main():
@@ -300,7 +301,9 @@ def main():
         parser.error("--validation-fraction must be between 0.05 and 0.4")
 
     OUT_DIR.mkdir(parents=True, exist_ok=True)
-    output = OUT_DIR / f"ls_solver_validation_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
+    output = OUT_DIR / (
+        f"ls_solver_validation_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
+    )
     rows = []
     for seed in args.seeds:
         rows.extend(run_seed(seed, args))
