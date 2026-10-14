@@ -1,4 +1,4 @@
-"""Numerically robust least-squares classifier heads for MNIST.
+"""Numerically robust least-squares utilities for BNN-DFA-QUBO.
 
 The ridge solver uses CPU float64 and an augmented least-squares system, not
 normal equations. The intercept is not penalized. Lambda selection must use
