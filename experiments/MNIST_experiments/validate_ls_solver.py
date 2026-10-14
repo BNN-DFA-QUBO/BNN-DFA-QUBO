@@ -3,12 +3,13 @@
 The original MNIST training set is stratified into backbone-fit (80%) and
 validation (20%) subsets BEFORE BNN+DFA training. Validation examples therefore
 do not influence the learned representation. Solver selection uses validation
-accuracy only; the held-out MNIST test set is evaluated after selection.
+accuracy only. After selecting the solver/lambda, the classifier head is refit
+using representations from all original MNIST training examples; test data are
+never used to choose the configuration.
 
-This is a diagnostic runner. It does not modify original experiment code or
-existing result CSVs. The validation backbone trains on 80% of the standard
-MNIST training split, so this diagnostic is not a replacement for the paper's
-full-training results.
+This diagnostic does not modify original experiment code or existing result
+CSVs. The backbone itself trains on 80% of the standard MNIST training split,
+so absolute results are not a replacement for the paper's full-training results.
 """
 from __future__ import annotations
 
@@ -83,8 +84,8 @@ def fit_legacy_default(H: torch.Tensor, y: torch.Tensor):
 def append_rows(path: Path, rows: list[dict]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     fields = [
-        "seed", "device", "torch_version", "epochs", "train_samples",
-        "validation_samples", "candidate", "lambda_relative", "reported_rank",
+        "seed", "device", "torch_version", "epochs", "backbone_train_samples",
+        "validation_samples", "head_fit_samples", "candidate", "lambda_relative", "reported_rank",
         "validation_accuracy", "test_accuracy", "role", "error",
         "fit_seconds", "native_bnn_dfa_test_accuracy", "dfa_train_seconds",
     ]
@@ -156,7 +157,7 @@ def run_seed(seed: int, args) -> list[dict]:
         legacy_val = accuracy_from_scores(predict_scores(H_val, legacy_fit), y_val)
         candidates.append({
             "seed": seed, "device": str(device), "torch_version": torch.__version__,
-            "epochs": args.epochs, "train_samples": len(y_train),
+            "epochs": args.epochs, "backbone_train_samples": len(y_train),
             "validation_samples": len(y_val), "candidate": "legacy_float32_default",
             "lambda_relative": "", "reported_rank": legacy_rank,
             "validation_accuracy": legacy_val, "test_accuracy": "",
@@ -169,7 +170,7 @@ def run_seed(seed: int, args) -> list[dict]:
     except Exception as exc:
         candidates.append({
             "seed": seed, "device": str(device), "torch_version": torch.__version__,
-            "epochs": args.epochs, "train_samples": len(y_train),
+            "epochs": args.epochs, "backbone_train_samples": len(y_train),
             "validation_samples": len(y_val), "candidate": "legacy_float32_default",
             "lambda_relative": "", "reported_rank": "", "validation_accuracy": "",
             "test_accuracy": "", "role": "baseline_only",
@@ -185,7 +186,7 @@ def run_seed(seed: int, args) -> list[dict]:
         stable_scores["svd_gelsd_rcond_1e-6"] = val_acc
         candidates.append({
             "seed": seed, "device": str(device), "torch_version": torch.__version__,
-            "epochs": args.epochs, "train_samples": len(y_train),
+            "epochs": args.epochs, "backbone_train_samples": len(y_train),
             "validation_samples": len(y_val), "candidate": "svd_gelsd_rcond_1e-6",
             "lambda_relative": 0.0, "reported_rank": "",
             "validation_accuracy": val_acc, "test_accuracy": "",
@@ -196,7 +197,7 @@ def run_seed(seed: int, args) -> list[dict]:
     except Exception as exc:
         candidates.append({
             "seed": seed, "device": str(device), "torch_version": torch.__version__,
-            "epochs": args.epochs, "train_samples": len(y_train),
+            "epochs": args.epochs, "backbone_train_samples": len(y_train),
             "validation_samples": len(y_val), "candidate": "svd_gelsd_rcond_1e-6",
             "lambda_relative": 0.0, "reported_rank": "", "validation_accuracy": "",
             "test_accuracy": "", "role": "eligible_for_selection",
@@ -212,7 +213,7 @@ def run_seed(seed: int, args) -> list[dict]:
             stable_scores[name] = val_acc
             candidates.append({
                 "seed": seed, "device": str(device), "torch_version": torch.__version__,
-                "epochs": args.epochs, "train_samples": len(y_train),
+                "epochs": args.epochs, "backbone_train_samples": len(y_train),
                 "validation_samples": len(y_val), "candidate": name,
                 "lambda_relative": lam, "reported_rank": "",
                 "validation_accuracy": val_acc, "test_accuracy": "",
@@ -223,7 +224,7 @@ def run_seed(seed: int, args) -> list[dict]:
         except Exception as exc:
             candidates.append({
                 "seed": seed, "device": str(device), "torch_version": torch.__version__,
-                "epochs": args.epochs, "train_samples": len(y_train),
+                "epochs": args.epochs, "backbone_train_samples": len(y_train),
                 "validation_samples": len(y_val), "candidate": name,
                 "lambda_relative": lam, "reported_rank": "",
                 "validation_accuracy": "", "test_accuracy": "",
@@ -254,15 +255,19 @@ def run_seed(seed: int, args) -> list[dict]:
         flush=True,
     )
 
-    # Fit the legacy comparator and selected stable head on the same backbone-fit
-    # representations; test set is not used to select lambda or solver.
+    # After selecting configuration on validation, refit the heads with all
+    # original training examples (fit subset + held-out validation subset). The
+    # backbone remains trained on fit subset only; test remains untouched.
+    H_all = torch.cat([H_train, H_val], dim=0)
+    y_all = torch.cat([y_train, y_val], dim=0)
     final_rows = []
     if legacy_fit is not None:
-        legacy_test = accuracy_from_scores(predict_scores(H_test, legacy_fit), y_test)
+        W_legacy_all, _ = fit_legacy_default(H_all, y_all)
+        legacy_test = accuracy_from_scores(predict_scores(H_test, W_legacy_all), y_test)
         final_rows.append({
             "seed": seed, "device": str(device), "torch_version": torch.__version__,
-            "epochs": args.epochs, "train_samples": len(y_train),
-            "validation_samples": len(y_val),
+            "epochs": args.epochs, "backbone_train_samples": len(y_train),
+            "validation_samples": len(y_val), "head_fit_samples": len(y_all),
             "candidate": "legacy_float32_default", "lambda_relative": "",
             "reported_rank": legacy_rank, "validation_accuracy": legacy_val,
             "test_accuracy": legacy_test, "role": "baseline_test_comparison",
@@ -272,13 +277,13 @@ def run_seed(seed: int, args) -> list[dict]:
         print(f"legacy LS test accuracy: {legacy_test:.2f}%", flush=True)
 
     W_selected = fit_ridge_classifier(
-        H_train, y_train, NUM_CLASSES, lambda_relative=selected_lambda
+        H_all, y_all, NUM_CLASSES, lambda_relative=selected_lambda
     )
     selected_test = accuracy_from_scores(predict_scores(H_test, W_selected), y_test)
     final_rows.append({
         "seed": seed, "device": str(device), "torch_version": torch.__version__,
-        "epochs": args.epochs, "train_samples": len(y_train),
-        "validation_samples": len(y_val),
+        "epochs": args.epochs, "backbone_train_samples": len(y_train),
+        "validation_samples": len(y_val), "head_fit_samples": len(y_all),
         "candidate": f"selected_stable:{selected_name}",
         "lambda_relative": selected_lambda, "reported_rank": "",
         "validation_accuracy": stable_scores[selected_name],
