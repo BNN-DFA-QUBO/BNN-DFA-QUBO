@@ -39,6 +39,13 @@ CONTROLLED_METHOD_METADATA = {
         "bias_treatment": "continuous least-squares intercept retained",
         "optimization_procedure": "numpy.linalg.lstsq, sign-binarize weights, validation-selected threshold",
     },
+    "Binarized Ridge LS (refit scale+bias)": {
+        "method_variant": "ridge_ls_then_binary_weights_refit_scale_bias",
+        "objective": "regularized squared residual error for initial weights; training-only least-squares refit after binarization",
+        "target_encoding": "stroke labels {0,1}",
+        "bias_treatment": "class-independent scalar scale and intercept refitted on training rows after sign binarization",
+        "optimization_procedure": "float64 augmented SVD Ridge LS; sign-binarize feature weights; training-only scale/intercept refit; validation-selected threshold",
+    },
     "Direct Binary": {
         "method_variant": "class_mean_sign_direction",
         "objective": "no loss optimization; sign of positive-minus-negative training mean",
@@ -64,9 +71,15 @@ CONTROLLED_METHOD_METADATA = {
 
 
 def run_experiments(seeds=None, split_seed=SPLIT_SEED, balancing_method=BALANCING_METHOD, overwrite=False,
-                    output_dir=DATA_DIR):
+                    output_dir=DATA_DIR, ls_solver="legacy"):
     output_dir = Path(output_dir)
     results_path = output_dir.parent / "stroke_controlled_results.csv"
+    if ls_solver not in {"legacy", "ridge"}:
+        raise ValueError("ls_solver must be 'legacy' or 'ridge'")
+    binary_method_name = (
+        "Binarized Ridge LS (refit scale+bias)" if ls_solver == "ridge"
+        else "Binarized LS"
+    )
     seeds = list(SEEDS if seeds is None else seeds)
     representation_paths = [output_dir / f"stroke_dfa_representation_seed_{seed}.pt" for seed in seeds]
     model_result_paths = [output_dir / f"stroke_bnn_dfa_seed_{seed}.json" for seed in seeds]
@@ -135,7 +148,7 @@ def run_experiments(seeds=None, split_seed=SPLIT_SEED, balancing_method=BALANCIN
                 False
             ),
             (
-                "Binarized LS",
+                binary_method_name,
                 train_binarized_ls,
                 False
             ),
@@ -167,6 +180,11 @@ def run_experiments(seeds=None, split_seed=SPLIT_SEED, balancing_method=BALANCIN
                 result = method_function(
                     representation_path,
                     seed
+                )
+            elif method_name in ("Binarized LS", "Binarized Ridge LS (refit scale+bias)"):
+                result = method_function(
+                    representation_path,
+                    ls_solver=ls_solver
                 )
             else:
                 result = method_function(
@@ -316,9 +334,12 @@ if __name__ == "__main__":
     parser.add_argument("--split-seed", type=int, default=SPLIT_SEED)
     parser.add_argument("--seeds", type=int, nargs="+", default=SEEDS, help="BNN/DFA model-training seeds")
     parser.add_argument("--balancing", choices=("random_oversample", "none"), default=BALANCING_METHOD)
+    parser.add_argument("--ls-solver", choices=("legacy", "ridge"), default="legacy",
+                        help="Stroke Binarized-LS implementation; default preserves legacy results")
     parser.add_argument("--overwrite", action="store_true", help="Replace existing outputs and regenerate incompatible preprocessing artifacts")
     parser.add_argument("--output-dir", type=Path, default=DATA_DIR,
                         help="Directory for preprocessing and representation artifacts (default: data/stroke)")
     args = parser.parse_args()
+    print(f"Stroke Binarized-LS solver: {args.ls_solver}")
     run_experiments(seeds=args.seeds, split_seed=args.split_seed, balancing_method=args.balancing,
-                    overwrite=args.overwrite, output_dir=args.output_dir)
+                    overwrite=args.overwrite, output_dir=args.output_dir, ls_solver=args.ls_solver)
