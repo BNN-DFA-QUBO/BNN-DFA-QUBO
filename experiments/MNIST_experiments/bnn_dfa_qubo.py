@@ -532,8 +532,7 @@ if __name__ == "__main__":
 
     print()
     print(
-        "Calculating QUBO scales from "
-        "stable Ridge-LS solution (relative lambda=1e-4)..."
+        f"Calculating QUBO scales using {scale_solver} LS initialization..."
     )
 
     if scale_solver == "ridge":
