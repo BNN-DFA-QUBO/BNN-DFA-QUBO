@@ -361,9 +361,12 @@ def binarize_classifier(
     # Binary head arithmetic is float32; the stable Ridge-LS solve itself was
     # performed in CPU float64 before this sign/scale conversion.
     classifier = classifier.detach().to(device='cpu', dtype=torch.float32)
+    # Ridge LS is solved in float64 on CPU; binary-head arithmetic and the
+    # hidden representation remain float32, as in the historical implementation.
+    classifier = classifier.detach().to(device='cpu', dtype=torch.float32)
     real_weights = classifier[:-1, :]
 
-    real_bias = classifier[-1, :].clone()
+    real_bias = classifier[-1, :].clone().clone()
 
     # --------------------------------------------------------
     # Binary weights
@@ -553,7 +556,7 @@ def evaluate_binary_training_fit(
 
     append_result(
         experiment="dfa_binary_head",
-        method="BNN + DFA + Binarized LS Head",
+        method="BNN + DFA + Binarized Ridge LS Head",
         seed=seed,
         test_accuracy=test_accuracy,
         test_loss=test_loss if "test_loss" in locals() else None,
@@ -712,7 +715,7 @@ if __name__ == "__main__":
     )
 
     print(
-        f"Real-Valued LS Test Accuracy: "
+        f"Ridge LS Test Accuracy: "
         f"{ls_test_accuracy:.2f}%"
     )
 
@@ -810,12 +813,12 @@ if __name__ == "__main__":
     )
 
     print(
-        f"BNN + DFA + Real-Valued LS Head: "
+        f"BNN + DFA + Ridge LS Head: "
         f"{ls_test_accuracy:.2f}%"
     )
 
     print(
-        f"BNN + DFA + Binarized LS Head: "
+        f"BNN + DFA + Binarized Ridge LS Head: "
         f"{binary_test_accuracy:.2f}%"
     )
 
@@ -837,5 +840,5 @@ if __name__ == "__main__":
         test_loss=None,
         training_time_sec=training_timer.seconds,
         parameter_count=count_parameters(model),
-        notes=f"Real-valued LS head accuracy: {ls_test_accuracy:.4f}%",
+        notes=f"Ridge LS pre-binarization accuracy: {ls_test_accuracy:.4f}%; binary scale/bias treatment remains the historical implementation.",
     )
