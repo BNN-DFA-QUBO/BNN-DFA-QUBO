@@ -358,15 +358,11 @@ def binarize_classifier(
     # First 128 rows = weights
     # Last row = bias
 
-    # Binary head arithmetic is float32; the stable Ridge-LS solve itself was
-    # performed in CPU float64 before this sign/scale conversion.
-    classifier = classifier.detach().to(device='cpu', dtype=torch.float32)
-    # Ridge LS is solved in float64 on CPU; binary-head arithmetic and the
-    # hidden representation remain float32, as in the historical implementation.
-    classifier = classifier.detach().to(device='cpu', dtype=torch.float32)
+    # Ridge LS is solved in CPU float64. The historical binarization,
+    # scale fitting, and inference below use float32.
+    classifier = classifier.detach().to(device="cpu", dtype=torch.float32)
     real_weights = classifier[:-1, :]
-
-    real_bias = classifier[-1, :].clone().clone()
+    real_bias = classifier[-1, :].clone()
 
     # --------------------------------------------------------
     # Binary weights
