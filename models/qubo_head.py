@@ -99,6 +99,11 @@ def calculate_legacy_ls_scales(
 
 
 
+
+# Backwards-compatible legacy API for diagnostics and historical scripts.
+def calculate_ls_scales(H, labels, num_classes=10):
+    return calculate_legacy_ls_scales(H, labels, num_classes=num_classes)
+
 def calculate_ridge_ls_scales(
     H,
     labels,
