@@ -1,10 +1,9 @@
 """Stroke Binarized-LS head with legacy and stable Ridge-LS variants.
 
-The default preserves the historical NumPy LS -> sign-binarized weights ->
-retained intercept behavior. The candidate Ridge path is selected explicitly
-with --ls-solver ridge; it refits scale and intercept on training
-representations only. Validation chooses the score threshold, and test data
-are used only for final metric reporting.
+The default uses float64 Ridge LS -> sign-binarized weights -> refitted
+scale and intercept. The historical NumPy LS path remains available with
+--ls-solver legacy. Scale/bias are fitted on training representations only;
+validation chooses the score threshold, and test data are reserved for final metrics.
 """
 import argparse
 import sys
@@ -73,7 +72,7 @@ def fit_binarized_ridge_ls(H_train, y_train, lambda_relative=1e-4):
     return binary_weights, float(scale), float(bias), weights
 
 
-def train_binarized_ls(representation_path, ls_solver="legacy", lambda_relative=1e-4):
+def train_binarized_ls(representation_path, ls_solver="ridge", lambda_relative=1e-4):
     """Evaluate one selected binarized LS variant on a saved representation."""
     if ls_solver not in {"ridge", "legacy"}:
         raise ValueError("ls_solver must be 'ridge' or 'legacy'")
@@ -140,7 +139,7 @@ def main():
         type=Path,
         default=DATA_DIR / "stroke_dfa_representation_seed_42.pt",
     )
-    parser.add_argument("--ls-solver", choices=("ridge", "legacy"), default="legacy",
+    parser.add_argument("--ls-solver", choices=("ridge", "legacy"), default="ridge",
                         help="ridge: stable Ridge-LS weights with refitted scale/bias; legacy: existing NumPy LS head")
     parser.add_argument("--lambda-relative", type=float, default=1e-4)
     args = parser.parse_args()
