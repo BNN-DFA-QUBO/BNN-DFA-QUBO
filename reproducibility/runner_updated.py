@@ -27,7 +27,7 @@ TARGET_PATTERNS = {
     "baseline_ann": r"Test Accuracy:\s*([0-9]+(?:\.[0-9]+)?)%",
     "bnn_bp": r"Test Accuracy:\s*([0-9]+(?:\.[0-9]+)?)%",
     "bnn_dfa": r"Final Test Accuracy:\s*([0-9]+(?:\.[0-9]+)?)%",
-    "dfa_least_squares": r"Least-Squares Test Accuracy:\s*([0-9]+(?:\.[0-9]+)?)%",
+    "dfa_least_squares": r"(?:Ridge LS|Least-Squares) Test Accuracy:\s*([0-9]+(?:\.[0-9]+)?)%",
     "dfa_binary_head": r"Binary Head Test Accuracy:\s*([0-9]+(?:\.[0-9]+)?)%",
     "dfa_direct_binary_head": r"BNN \+ DFA \+ Direct Binary Head Test Accuracy:\s*([0-9]+(?:\.[0-9]+)?)%",
     "dfa_binary_head_ste": r"BNN \+ DFA \+ STE Binary Head Test Accuracy:\s*([0-9]+(?:\.[0-9]+)?)%",
@@ -38,11 +38,11 @@ DISPLAY_NAMES = {
     "baseline_ann": "Standard ANN",
     "bnn_bp": "BNN + Backpropagation",
     "bnn_dfa": "BNN + DFA",
-    "dfa_least_squares": "DFA + Least-Squares Head",
-    "dfa_binary_head": "DFA + Binary Head",
+    "dfa_least_squares": "DFA + Ridge LS Head",
+    "dfa_binary_head": "DFA + Binarized Ridge LS Head (refit scale+bias)",
     "dfa_direct_binary_head": "DFA + Direct Binary Head",
     "dfa_binary_head_ste": "DFA + STE Binary Head",
-    "bnn_dfa_qubo": "DFA + QUBO Binary Head",
+    "bnn_dfa_qubo": "DFA + QUBO Binary Head (Ridge LS scale init)",
 }
 
 
