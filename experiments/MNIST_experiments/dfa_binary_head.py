@@ -807,7 +807,7 @@ if __name__ == "__main__":
     )
 
     print(
-        f"BNN + DFA + Ridge LS Head: "
+        f"BNN + DFA + {prefit_name} Head: "
         f"{ls_test_accuracy:.2f}%"
     )
 
