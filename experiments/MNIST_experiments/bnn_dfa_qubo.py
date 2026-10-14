@@ -4,8 +4,9 @@ import torch.nn.functional as F
 from models.bnn import BNN
 from models.dfa import DFAClassifier, DFAFunction
 from models.qubo_head import (
-    calculate_ls_scales,
-    optimize_binary_classifier
+    calculate_ridge_ls_scales,
+    calculate_legacy_ls_scales,
+    optimize_binary_classifier,
 )
 from utils.MNIST.data import get_mnist_loaders
 from utils.MNIST.seed import set_seed, get_seed
@@ -377,7 +378,7 @@ def evaluate_qubo_head(
 
     append_result(
         experiment="bnn_dfa_qubo",
-        method="BNN + DFA + QUBO",
+        method="BNN + DFA + QUBO (Ridge LS scale initialization)",
         seed=seed,
         test_accuracy=test_accuracy,
         test_loss=test_loss if "test_loss" in locals() else None,
@@ -524,10 +525,10 @@ if __name__ == "__main__":
     print()
     print(
         "Calculating QUBO scales from "
-        "real-valued least-squares solution..."
+        "stable Ridge-LS solution (relative lambda=1e-4)..."
     )
 
-    qubo_scales = calculate_ls_scales(
+    qubo_scales = calculate_ridge_ls_scales(
         H=H_train,
         labels=y_train,
         num_classes=10
