@@ -30,7 +30,7 @@ DISPLAY_NAMES = {
     "bnn_bp": "BNN + Backpropagation",
     "bnn_dfa": "BNN + DFA",
     "dfa_least_squares": "DFA + Ridge LS Head",
-    "dfa_binary_head": "DFA + Binarized Ridge LS Head",
+    "dfa_binary_head": "DFA + Binarized Ridge LS Head (refit scale+bias)",
     "dfa_direct_binary_head": "DFA + Direct Binary Head",
     "dfa_binary_head_ste": "DFA + STE Binary Head",
     "bnn_dfa_qubo": "DFA + QUBO Binary Head (Ridge LS scale init)",
