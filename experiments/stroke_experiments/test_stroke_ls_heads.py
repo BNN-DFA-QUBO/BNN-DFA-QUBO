@@ -9,7 +9,7 @@ import unittest
 import numpy as np
 import torch
 
-from models.ls_heads import fit_ridge_regression
+from models.ls_heads import fit_ridge_classifier, fit_ridge_regression
 from utils.stroke_metrics import find_best_threshold
 from experiments.stroke_experiments.validate_stroke_ls_heads import (
     fit_legacy_ls,
@@ -49,6 +49,14 @@ class RidgeRegressionTests(unittest.TestCase):
         weights = fit_ridge_regression(hidden, targets, lambda_relative=1e-4)
 
         self.assertEqual(tuple(weights.shape), (5, 2))
+        self.assertTrue(torch.isfinite(weights).all().item())
+
+    def test_mnist_classifier_helper_uses_shared_solver(self):
+        torch.manual_seed(12)
+        hidden = torch.randn(36, 5, dtype=torch.float64)
+        labels = torch.tensor([0, 1, 2] * 12, dtype=torch.long)
+        weights = fit_ridge_classifier(hidden, labels, num_classes=3, lambda_relative=1e-4)
+        self.assertEqual(tuple(weights.shape), (6, 3))
         self.assertTrue(torch.isfinite(weights).all().item())
 
     def test_negative_regularization_is_rejected(self):
