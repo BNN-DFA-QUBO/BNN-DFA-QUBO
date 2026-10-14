@@ -834,5 +834,5 @@ if __name__ == "__main__":
         test_loss=None,
         training_time_sec=training_timer.seconds,
         parameter_count=count_parameters(model),
-        notes=f"Ridge LS pre-binarization accuracy: {ls_test_accuracy:.4f}%; binary scale/bias treatment remains the historical implementation.",
+        notes=f"{prefit_name} pre-binarization accuracy: {ls_test_accuracy:.4f}%; historical binary scale/bias treatment retained.",
     )
