@@ -7,6 +7,7 @@ Use it to record final metrics without changing model implementations.
 from __future__ import annotations
 
 import csv
+import os
 import platform
 import time
 from pathlib import Path
@@ -20,7 +21,8 @@ except ImportError:  # pragma: no cover
 
 ROOT = Path(__file__).resolve().parents[2]
 RESULTS_DIR = ROOT / "data" / "results"
-RESULTS_CSV = RESULTS_DIR / "mnist_results.csv"
+# Optional redirect used by diagnostics/tests to keep historical CSVs untouched.
+RESULTS_CSV = Path(os.environ.get("BNN_DFA_RESULTS_CSV", RESULTS_DIR / "mnist_results.csv"))
 
 
 def get_device_name() -> str:
