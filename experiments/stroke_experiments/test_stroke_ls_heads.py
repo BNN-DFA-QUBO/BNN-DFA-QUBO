@@ -15,6 +15,7 @@ from experiments.stroke_experiments.validate_stroke_ls_heads import (
     fit_legacy_binarized_ls,
     fit_ridge_ls,
     fit_ridge_binarized_ls,
+    find_best_threshold_exact,
     score_continuous,
 )
 
@@ -61,6 +62,13 @@ class StrokeHeadComparisonTests(unittest.TestCase):
         self.hidden = rng.normal(size=(80, 6))
         latent = 1.3 * self.hidden[:, 0] - 0.9 * self.hidden[:, 1] + 0.2 * self.hidden[:, 2]
         self.labels = (latent > np.median(latent)).astype(np.float64)
+
+    def test_exact_threshold_search_handles_extreme_score_ranges(self):
+        y = np.array([0, 0, 1, 1], dtype=np.int64)
+        scores = np.array([-1e9, -1.0, 1.0, 1e9], dtype=np.float64)
+        threshold, validation_ba = find_best_threshold_exact(y, scores)
+        self.assertEqual(validation_ba, 1.0)
+        np.testing.assert_array_equal((scores >= threshold).astype(int), y)
 
     def test_all_head_fits_produce_finite_scores(self):
         legacy = fit_legacy_ls(self.hidden, self.labels)
