@@ -262,14 +262,14 @@ def run_seed(seed: int, args) -> list[dict]:
     y_all = torch.cat([y_train, y_val], dim=0)
     final_rows = []
     if legacy_fit is not None:
-        W_legacy_all, _ = fit_legacy_default(H_all, y_all)
+        W_legacy_all, legacy_rank_all = fit_legacy_default(H_all, y_all)
         legacy_test = accuracy_from_scores(predict_scores(H_test, W_legacy_all), y_test)
         final_rows.append({
             "seed": seed, "device": str(device), "torch_version": torch.__version__,
             "epochs": args.epochs, "backbone_train_samples": len(y_train),
             "validation_samples": len(y_val), "head_fit_samples": len(y_all),
             "candidate": "legacy_float32_default", "lambda_relative": "",
-            "reported_rank": legacy_rank, "validation_accuracy": legacy_val,
+            "reported_rank": legacy_rank_all, "validation_accuracy": legacy_val,
             "test_accuracy": legacy_test, "role": "baseline_test_comparison",
             "error": "", "native_bnn_dfa_test_accuracy": native_test_acc,
             "dfa_train_seconds": round(dfa_seconds, 2),
