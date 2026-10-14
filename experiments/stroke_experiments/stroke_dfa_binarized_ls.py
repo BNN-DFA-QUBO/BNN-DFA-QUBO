@@ -138,7 +138,8 @@ def main():
         type=Path,
         default=DATA_DIR / "stroke_dfa_representation_seed_42.pt",
     )
-    parser.add_argument("--ls-solver", choices=("ridge", "legacy"), default="ridge")
+    parser.add_argument("--ls-solver", choices=("ridge", "legacy"), default="legacy",
+                        help="ridge: stable Ridge-LS weights with refitted scale/bias; legacy: existing NumPy LS head")
     parser.add_argument("--lambda-relative", type=float, default=1e-4)
     args = parser.parse_args()
 
