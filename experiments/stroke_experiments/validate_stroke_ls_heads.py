@@ -303,7 +303,7 @@ def main():
     )
     args = parser.parse_args()
 
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
     output_dir = DATA_DIR.parent / "results_diagnostic"
     raw_path = output_dir / f"stroke_ls_head_validation_{timestamp}.csv"
     summary_path = output_dir / f"stroke_ls_head_validation_summary_{timestamp}.csv"
@@ -315,6 +315,8 @@ def main():
 
     if args.lambda_relative < 0:
         parser.error("--lambda-relative must be >= 0")
+    if raw_path.exists() or summary_path.exists():
+        raise FileExistsError("Diagnostic result path already exists; rerun to obtain a fresh timestamp.")
     if args.representation_dir is None:
         artifacts_dir.mkdir(parents=True, exist_ok=False)
 
@@ -355,5 +357,5 @@ def main():
             print(f"  {row['method']}: {100 * value:.3f}%{dev_text}")
 
 
-if __'main__' == __name__:
+if __name__ == "__main__":
     main()
