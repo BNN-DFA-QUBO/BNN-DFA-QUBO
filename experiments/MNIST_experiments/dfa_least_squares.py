@@ -1,3 +1,4 @@
+import argparse
 import torch
 import torch.nn.functional as F
 
@@ -6,7 +7,7 @@ from models.ls_heads import fit_ridge_classifier
 from models.bnn import BNN
 from models.dfa import DFAClassifier, DFAFunction
 from utils.MNIST.data import get_mnist_loaders
-from utils.MNIST.seed import set_seed, get_seed
+from utils.MNIST.seed import set_seed
 
 from experiments.MNIST_experiments.results_utils import (
     append_result,
@@ -499,7 +500,7 @@ def evaluate_training_fit(
 
     append_result(
         experiment="dfa_least_squares",
-        method="BNN + DFA + Ridge LS Head",
+        method=method_name,
         seed=seed,
         test_accuracy=test_accuracy,
         test_loss=test_loss if "test_loss" in locals() else None,
@@ -510,10 +511,17 @@ def evaluate_training_fit(
 
 if __name__ == "__main__":
 
-    seed = get_seed()
+    parser = argparse.ArgumentParser(description="MNIST BNN+DFA with LS/Ridge-LS head")
+    parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--ls-solver", choices=("ridge", "legacy"), default="ridge",
+                        help="ridge: stable float64 Ridge LS; legacy: original float32 default LS")
+    args = parser.parse_args()
+    seed = args.seed
+    ls_solver = args.ls_solver
     set_seed(seed)
 
     print(f"Using seed: {seed}")
+    print(f"LS solver: {ls_solver}")
 
     device = torch.device(
         "mps"
@@ -587,13 +595,22 @@ if __name__ == "__main__":
 
     print("Training hidden feature shape:", H_train.shape)
 
-    print("\nFitting numerically stable Ridge LS classifier...")
-
-    classifier = fit_least_squares_classifier(
-        H=H_train,
-        labels=y_train,
-        num_classes=10
-    )
+    if ls_solver == "ridge":
+        print("\nFitting numerically stable Ridge LS classifier...")
+        classifier = fit_least_squares_classifier(
+            H=H_train, labels=y_train, num_classes=10
+        )
+        head_name = "Ridge LS"
+        method_name = "BNN + DFA + Ridge LS Head"
+        summary_head_name = "BNN + DFA + Ridge LS Head"
+    else:
+        print("\nFitting legacy float32 least-squares classifier...")
+        classifier = fit_legacy_least_squares_classifier(
+            H=H_train, labels=y_train, num_classes=10
+        )
+        head_name = "Legacy LS"
+        method_name = "BNN + DFA + Real-Valued LS Head (legacy)"
+        summary_head_name = "BNN + DFA + Real-Valued LS Head (legacy)"
 
     print("Least-squares classifier shape:", classifier.shape)
 
@@ -604,7 +621,7 @@ if __name__ == "__main__":
     )
 
     print(
-        f"\nRidge LS Training Accuracy: "
+        f"\n{head_name} Training Accuracy: "
         f"{train_ls_accuracy:.2f}%"
     )
 
@@ -617,17 +634,15 @@ if __name__ == "__main__":
         device=device
     )
 
-    print(
-        f"Ridge LS Test Accuracy: "
-        f"{test_ls_accuracy:.2f}%"
-    )
+    accuracy_label = "Ridge LS Test Accuracy" if ls_solver == "ridge" else "Least-Squares Test Accuracy"
+    print(f"{accuracy_label}: {test_ls_accuracy:.2f}%")
 
     difference = test_ls_accuracy - dfa_test_accuracy
 
     print("\n==========================================")
     print(f"BNN + DFA: {dfa_test_accuracy:.2f}%")
     print(
-        f"BNN + DFA + Ridge LS Head: "
+        f"{summary_head_name}: "
         f"{test_ls_accuracy:.2f}%"
     )
     print(f"Difference: {difference:+.2f} percentage points")
