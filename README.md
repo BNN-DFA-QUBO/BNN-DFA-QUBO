@@ -239,7 +239,7 @@ python -m reproducibility.runner dfa_binary_head
 python -m reproducibility.runner bnn_dfa_qubo
 ```
 
-The canonical runner uses the checked-in `protocol/manifest.json`, fixed test indices, and predetermined per-epoch training permutations. Use the same checked-in protocol on every machine. Do not run `python -m reproducibility.generate_protocol` on a second machine: it regenerates the protocol artifacts. Regenerate only intentionally, and then share/commit the new protocol as a single versioned change.
+The canonical runner uses the checked-in `protocol/manifest.json`, fixed test indices, and predetermined per-epoch training permutations. Use the same checked-in protocol on every machine. The protocol generator refuses to replace existing protocol files by default. Do not regenerate the protocol on a second machine. Only regenerate intentionally on the designated machine with `python -m reproducibility.generate_protocol --overwrite`, then review and share/commit the manifest and all protocol files as one versioned change.
 
 The reproducibility protocol currently targets the MNIST track; Stroke reproducibility instead relies on explicit model seeds, a fixed split seed, validated preprocessing artifacts, representation metadata, and saved dataset/configuration hashes. To strengthen a Stroke comparison, keep the dataset hash, split seed, balancing method, model seeds, preprocessing metadata, package versions, and result CSV together.
 
