@@ -21,8 +21,7 @@ import torch
 from models.ls_heads import fit_ridge_regression
 from utils.stroke_config import BALANCING_METHOD, SEEDS, SPLIT_SEED
 from utils.stroke_data import DATA_DIR
-from sklearn.metrics import balanced_accuracy_score
-from utils.stroke_metrics import calculate_metrics
+from utils.stroke_metrics import calculate_metrics, find_best_threshold
 from utils.stroke_representation import load_representation, save_representation
 from experiments.stroke_experiments.stroke_bnn_dfa import train_dfa
 
@@ -104,36 +103,8 @@ def fit_ridge_binarized_ls(H_train, y_train, weights):
     return binary, float(scale), float(bias)
 
 
-def find_best_threshold_exact(y_true, scores):
-    """Select a validation threshold by checking every score boundary.
-
-    Unlike a fixed linear grid, unique-score boundaries cannot skip useful
-    thresholds when score ranges contain extreme values or large gaps.
-    Test labels are never passed to this function.
-    """
-    y = np.asarray(y_true).reshape(-1).astype(np.int64)
-    values = np.asarray(scores, dtype=np.float64).reshape(-1)
-    if len(y) == 0 or len(y) != len(values):
-        raise ValueError("y_true and scores must be non-empty and have equal length")
-    if not np.isfinite(values).all():
-        raise ValueError("Threshold selection requires finite scores")
-
-    candidates = np.unique(values)
-    candidates = np.concatenate(
-        (candidates, [np.nextafter(candidates[-1], np.inf)])
-    )
-    best_threshold = float(candidates[0])
-    best_score = -np.inf
-    for threshold in candidates:
-        score = balanced_accuracy_score(y, values >= threshold)
-        if score > best_score:
-            best_score = float(score)
-            best_threshold = float(threshold)
-    return best_threshold, best_score
-
-
 def evaluate_scores(y_val, validation_scores, y_test, test_scores):
-    threshold, validation_ba = find_best_threshold_exact(y_val, validation_scores)
+    threshold, validation_ba = find_best_threshold(y_val, validation_scores)
     metrics = calculate_metrics(y_test, test_scores, threshold)
     return {
         "threshold": float(threshold),
