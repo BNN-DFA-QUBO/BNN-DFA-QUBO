@@ -18,7 +18,7 @@ TARGET_PATTERNS = {
     "baseline_ann": r"Test Accuracy:\s*([0-9]+(?:\.[0-9]+)?)%",
     "bnn_bp": r"Test Accuracy:\s*([0-9]+(?:\.[0-9]+)?)%",
     "bnn_dfa": r"Final Test Accuracy:\s*([0-9]+(?:\.[0-9]+)?)%",
-    "dfa_least_squares": r"Least-Squares Test Accuracy:\s*([0-9]+(?:\.[0-9]+)?)%",
+    "dfa_least_squares": r"(?:Ridge LS|Least-Squares) Test Accuracy:\s*([0-9]+(?:\.[0-9]+)?)%",
     "dfa_binary_head": r"Binary Head Test Accuracy:\s*([0-9]+(?:\.[0-9]+)?)%",
     "dfa_direct_binary_head": r"BNN \+ DFA \+ Direct Binary Head Test Accuracy:\s*([0-9]+(?:\.[0-9]+)?)%",
     "dfa_binary_head_ste": r"BNN \+ DFA \+ STE Binary Head Test Accuracy:\s*([0-9]+(?:\.[0-9]+)?)%",
@@ -29,11 +29,11 @@ DISPLAY_NAMES = {
     "baseline_ann": "Standard ANN",
     "bnn_bp": "BNN + Backpropagation",
     "bnn_dfa": "BNN + DFA",
-    "dfa_least_squares": "DFA + Least-Squares Head",
-    "dfa_binary_head": "DFA + Binary Head",
+    "dfa_least_squares": "DFA + Ridge LS Head",
+    "dfa_binary_head": "DFA + Binarized Ridge LS Head (refit scale+bias)",
     "dfa_direct_binary_head": "DFA + Direct Binary Head",
     "dfa_binary_head_ste": "DFA + STE Binary Head",
-    "bnn_dfa_qubo": "DFA + QUBO Binary Head",
+    "bnn_dfa_qubo": "DFA + QUBO Binary Head (Ridge LS scale init)",
 }
 
 DEFAULT_EXPERIMENTS = list(TARGET_PATTERNS)
@@ -94,9 +94,45 @@ def main():
         choices=DEFAULT_EXPERIMENTS,
         default=DEFAULT_EXPERIMENTS,
     )
+    parser.add_argument(
+        "--output",
+        type=Path,
+        default=RESULTS_PATH,
+        help="Raw CSV output path (default: data/mnist_controlled_results.csv)",
+    )
+    parser.add_argument(
+        "--summary-output",
+        type=Path,
+        default=None,
+        help="Summary CSV path (default: <output-stem>_summary.csv beside raw CSV)",
+    )
+    parser.add_argument(
+        "--overwrite",
+        action="store_true",
+        help="Replace the selected raw/summary CSVs if they already exist",
+    )
     args = parser.parse_args()
 
-    RESULTS_PATH.parent.mkdir(parents=True, exist_ok=True)
+    output_path = args.output if args.output.is_absolute() else ROOT / args.output
+    summary_path = args.summary_output
+    if summary_path is None:
+        summary_path = output_path.with_name(f"{output_path.stem}_summary.csv")
+    elif not summary_path.is_absolute():
+        summary_path = ROOT / summary_path
+
+    if output_path.resolve() == summary_path.resolve():
+        parser.error("--output and --summary-output must be different paths")
+
+    existing = [str(path) for path in (output_path, summary_path) if path.exists()]
+    if existing and not args.overwrite:
+        raise FileExistsError(
+            "Refusing to replace existing controlled MNIST outputs: "
+            + ", ".join(existing)
+            + ". Choose new --output/--summary-output paths or pass --overwrite."
+        )
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    summary_path.parent.mkdir(parents=True, exist_ok=True)
 
     rows = []
     for seed in args.seeds:
@@ -110,24 +146,26 @@ def main():
             print("-" * 70)
             rows.append(run_one(experiment, seed))
 
+    if not rows:
+        raise RuntimeError("No experiment results were collected.")
+
     df = pd.DataFrame(rows)
-    df.to_csv(RESULTS_PATH, index=False)
+    df.to_csv(output_path, index=False)
 
     summary = (
         df.groupby(["experiment", "method"])["test_accuracy"]
-        .agg(["mean", "std", "min", "max"])
+        .agg(["count", "mean", "std", "min", "max"])
         .reset_index()
+        .rename(columns={"count": "runs", "mean": "accuracy_mean", "std": "accuracy_std",
+                         "min": "accuracy_min", "max": "accuracy_max"})
     )
-    summary.to_csv(
-        ROOT / "data" / "mnist_controlled_results_summary.csv",
-        index=False,
-    )
+    summary.to_csv(summary_path, index=False)
 
     print("\n" + "=" * 70)
     print("MNIST CONTROLLED EXPERIMENT COMPLETE")
     print("=" * 70)
-    print(f"Raw results: {RESULTS_PATH}")
-    print(f"Summary:     {ROOT / 'data' / 'mnist_controlled_results_summary.csv'}")
+    print(f"Raw results: {output_path}")
+    print(f"Summary:     {summary_path}")
 
 
 if __name__ == "__main__":

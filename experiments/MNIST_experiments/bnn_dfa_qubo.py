@@ -1,14 +1,16 @@
+import argparse
 import torch
 import torch.nn.functional as F
 
 from models.bnn import BNN
 from models.dfa import DFAClassifier, DFAFunction
 from models.qubo_head import (
-    calculate_ls_scales,
-    optimize_binary_classifier
+    calculate_ridge_ls_scales,
+    calculate_legacy_ls_scales,
+    optimize_binary_classifier,
 )
 from utils.MNIST.data import get_mnist_loaders
-from utils.MNIST.seed import set_seed, get_seed
+from utils.MNIST.seed import set_seed
 
 from experiments.MNIST_experiments.results_utils import (
     append_result,
@@ -377,7 +379,7 @@ def evaluate_qubo_head(
 
     append_result(
         experiment="bnn_dfa_qubo",
-        method="BNN + DFA + QUBO",
+        method=result_method,
         seed=seed,
         test_accuracy=test_accuracy,
         test_loss=test_loss if "test_loss" in locals() else None,
@@ -393,10 +395,17 @@ if __name__ == "__main__":
     # Seed
     # --------------------------------------------------------
 
-    seed = get_seed()
+    parser = argparse.ArgumentParser(description="MNIST BNN+DFA QUBO head")
+    parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--qubo-scale-solver", choices=("ridge", "legacy"), default="ridge",
+                        help="LS solver used only to initialize QUBO alpha scales")
+    args = parser.parse_args()
+    seed = args.seed
+    scale_solver = args.qubo_scale_solver
     set_seed(seed)
 
     print(f"Using seed: {seed}")
+    print(f"QUBO scale initializer: {scale_solver}")
 
     # --------------------------------------------------------
     # Device
@@ -523,15 +532,19 @@ if __name__ == "__main__":
 
     print()
     print(
-        "Calculating QUBO scales from "
-        "real-valued least-squares solution..."
+        f"Calculating QUBO scales using {scale_solver} LS initialization..."
     )
 
-    qubo_scales = calculate_ls_scales(
-        H=H_train,
-        labels=y_train,
-        num_classes=10
-    )
+    if scale_solver == "ridge":
+        qubo_scales = calculate_ridge_ls_scales(
+            H=H_train, labels=y_train, num_classes=10
+        )
+        result_method = "BNN + DFA + QUBO (Ridge LS scale initialization)"
+    else:
+        qubo_scales = calculate_legacy_ls_scales(
+            H=H_train, labels=y_train, num_classes=10
+        )
+        result_method = "BNN + DFA + QUBO (legacy LS scale initialization)"
 
     print()
     print(
@@ -668,7 +681,7 @@ if __name__ == "__main__":
 
     append_result(
         experiment="bnn_dfa_qubo",
-        method="BNN + DFA + QUBO",
+        method=result_method,
         seed=seed,
         test_accuracy=test_accuracy,
         test_loss=None,

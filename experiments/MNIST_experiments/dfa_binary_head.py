@@ -1,10 +1,12 @@
+import argparse
 import torch
 import torch.nn.functional as F
 
 from models.bnn import BNN
 from models.dfa import DFAClassifier, DFAFunction
+from models.ls_heads import fit_ridge_classifier
 from utils.MNIST.data import get_mnist_loaders
-from utils.MNIST.seed import set_seed, get_seed
+from utils.MNIST.seed import set_seed
 
 from experiments.MNIST_experiments.results_utils import (
     append_result,
@@ -205,7 +207,7 @@ def collect_hidden_features(
 # LEAST-SQUARES CLASSIFIER
 # ============================================================
 
-def fit_least_squares(
+def fit_legacy_least_squares(
     H,
     labels,
     num_classes=10
@@ -249,8 +251,23 @@ def fit_least_squares(
     return W
 
 
+def fit_least_squares(
+    H,
+    labels,
+    num_classes=10,
+    lambda_relative=1e-4,
+):
+    """Fit the numerically stable Ridge-LS initial head used by Binarized LS."""
+    return fit_ridge_classifier(
+        H=H,
+        labels=labels,
+        num_classes=num_classes,
+        lambda_relative=lambda_relative,
+    )
+
+
 # ============================================================
-# EVALUATE REAL-VALUED LS HEAD
+# EVALUATE REAL-VALUED RIDGE LS HEAD
 # ============================================================
 
 def evaluate_ls_head(
@@ -265,7 +282,7 @@ def evaluate_ls_head(
     correct = 0
     total = 0
 
-    classifier = classifier.to(device)
+    classifier = classifier.to(device=device, dtype=torch.float32)
 
     with torch.no_grad():
 
@@ -332,82 +349,75 @@ def evaluate_ls_head(
 # ============================================================
 
 def binarize_classifier(
-    classifier
+    classifier,
+    refit_scale_bias=False,
 ):
+    """Binarize weights and optionally refit scale and intercept afterward.
 
-    # classifier:
-    #
-    # 129 x 10
-    #
-    # First 128 rows = weights
-    # Last row = bias
+    refit_scale_bias=True is the corrected Ridge-LS path: once the continuous
+    weights become binary, each class gets a fresh least-squares scale AND bias
+    fitted against training targets, rather than carrying over the real-valued
+    head's bias.
 
+    refit_scale_bias=False retains the historical scale and original-bias
+    treatment for reproducing legacy runs.
+    """
+    classifier = classifier.detach().to(device="cpu", dtype=torch.float32)
     real_weights = classifier[:-1, :]
-
-    real_bias = classifier[-1, :]
-
-    # --------------------------------------------------------
-    # Binary weights
-    # --------------------------------------------------------
+    real_bias = classifier[-1, :].clone()
 
     binary_weights = real_weights.sign()
-
-    # --------------------------------------------------------
-    # Calculate optimal scale for each class
-    # --------------------------------------------------------
+    H_fit = H_global.detach().to(device="cpu", dtype=torch.float32)
+    Y_fit = Y_global.detach().to(device="cpu", dtype=torch.float32)
 
     scales = []
+    biases = []
 
-    for class_id in range(10):
+    for class_id in range(binary_weights.shape[1]):
+        z = H_fit @ binary_weights[:, class_id]
+        target = Y_fit[:, class_id]
 
-        w = binary_weights[:, class_id]
+        if refit_scale_bias:
+            # Least-squares fit of z * scale + bias to the one-vs-rest
+            # {0,1} target for this class.
+            z_mean = z.mean()
+            target_mean = target.mean()
+            z_centered = z - z_mean
+            target_centered = target - target_mean
+            denominator = z_centered @ z_centered
 
-        prediction = (
-            H_global @ w
-        )
+            if denominator.item() > 1e-12:
+                scale_raw = (z_centered @ target_centered) / denominator
+            else:
+                scale_raw = torch.tensor(1.0, dtype=z.dtype)
 
-        target = (
-            Y_global[:, class_id]
-        )
+            # Keep scales non-negative by flipping binary direction. This
+            # preserves logits, including the refitted intercept.
+            if scale_raw.item() < 0:
+                binary_weights[:, class_id] *= -1
+                scale = -scale_raw
+            else:
+                scale = scale_raw
 
-        denominator = (
-            prediction @ prediction
-        )
-
-        if denominator > 1e-12:
-
-            scale = (
-                prediction @ target
-            ) / denominator
-
+            bias = target_mean - scale_raw * z_mean
+            biases.append(bias)
         else:
+            # Historical scale formula and continuous LS bias.
+            denominator = z @ z
+            if denominator.item() > 1e-12:
+                scale = (z @ target) / denominator
+            else:
+                scale = torch.tensor(1.0, dtype=z.dtype)
 
-            scale = torch.tensor(
-                1.0,
-                dtype=prediction.dtype
-            )
-
-        # ----------------------------------------------------
-        # Keep positive scale by flipping direction
-        # ----------------------------------------------------
-
-        if scale < 0:
-
-            binary_weights[:, class_id] *= -1
-
-            scale = -scale
+            if scale.item() < 0:
+                binary_weights[:, class_id] *= -1
+                scale = -scale
 
         scales.append(scale)
 
-    scales = torch.stack(
-        scales
-    )
-
-    return (
-        binary_weights,
-        scales,
-        real_bias
-    )
+    scales = torch.stack(scales)
+    final_bias = torch.stack(biases) if refit_scale_bias else real_bias
+    return binary_weights, scales, final_bias
 
 
 # ============================================================
@@ -532,15 +542,6 @@ def evaluate_binary_training_fit(
 # ============================================================
 
 
-    append_result(
-        experiment="dfa_binary_head",
-        method="BNN + DFA + Binarized LS Head",
-        seed=seed,
-        test_accuracy=test_accuracy,
-        test_loss=test_loss if "test_loss" in locals() else None,
-        training_time_sec=training_timer.seconds if "training_timer" in locals() else None,
-        parameter_count=count_parameters(model),
-    )
 
 
 if __name__ == "__main__":
@@ -549,10 +550,17 @@ if __name__ == "__main__":
     # Reproducibility
     # --------------------------------------------------------
 
-    seed = get_seed()
+    parser = argparse.ArgumentParser(description="MNIST BNN+DFA Binarized LS head")
+    parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--ls-solver", choices=("ridge", "legacy"), default="ridge",
+                        help="solver used for the initial real-valued LS fit")
+    args = parser.parse_args()
+    seed = args.seed
+    ls_solver = args.ls_solver
     set_seed(seed)
 
     print(f"Using seed: {seed}")
+    print(f"Initial LS solver: {ls_solver}")
 
     # --------------------------------------------------------
     # Device
@@ -653,18 +661,19 @@ if __name__ == "__main__":
     # --------------------------------------------------------
 
     print(
-        "\nFitting real-valued least-squares head..."
+        f"\nFitting {('Ridge LS' if ls_solver == 'ridge' else 'legacy float32 LS')} head..."
     )
 
-    classifier = fit_least_squares(
-        H_train,
-        y_train
-    )
+    if ls_solver == "ridge":
+        classifier = fit_least_squares(H_train, y_train)
+        method_name = "BNN + DFA + Binarized Ridge LS Head (refit scale+bias)"
+        prefit_name = "Ridge LS"
+    else:
+        classifier = fit_legacy_least_squares(H_train, y_train)
+        method_name = "BNN + DFA + Binarized LS Head (legacy LS initialization)"
+        prefit_name = "Legacy LS"
 
-    print(
-        "LS classifier shape:",
-        classifier.shape
-    )
+    print("Initial classifier shape:", classifier.shape)
 
     # --------------------------------------------------------
     # Global variables used by binary conversion
@@ -692,10 +701,8 @@ if __name__ == "__main__":
         device
     )
 
-    print(
-        f"Real-Valued LS Test Accuracy: "
-        f"{ls_test_accuracy:.2f}%"
-    )
+    prefit_accuracy_label = "Ridge LS Test Accuracy" if ls_solver == "ridge" else "Least-Squares Test Accuracy"
+    print(f"{prefit_accuracy_label}: {ls_test_accuracy:.2f}%")
 
     # --------------------------------------------------------
     # Binarize LS classifier
@@ -710,7 +717,8 @@ if __name__ == "__main__":
         scales,
         bias
     ) = binarize_classifier(
-        classifier
+        classifier,
+        refit_scale_bias=(ls_solver == "ridge"),
     )
 
     print(
@@ -791,14 +799,16 @@ if __name__ == "__main__":
     )
 
     print(
-        f"BNN + DFA + Real-Valued LS Head: "
+        f"BNN + DFA + {prefit_name} Head: "
         f"{ls_test_accuracy:.2f}%"
     )
 
-    print(
-        f"BNN + DFA + Binarized LS Head: "
-        f"{binary_test_accuracy:.2f}%"
+    binary_head_label = (
+        "BNN + DFA + Binarized Ridge LS Head (refit scale+bias)"
+        if ls_solver == "ridge"
+        else "BNN + DFA + Binarized LS Head (legacy initializer and bias)"
     )
+    print(f"{binary_head_label}: {binary_test_accuracy:.2f}%")
 
     print(
         f"Difference from LS: "
@@ -812,11 +822,14 @@ if __name__ == "__main__":
 
     append_result(
         experiment="dfa_binary_head",
-        method="BNN + DFA + Binarized LS Head",
+        method=method_name,
         seed=seed,
         test_accuracy=binary_test_accuracy,
         test_loss=None,
         training_time_sec=training_timer.seconds,
         parameter_count=count_parameters(model),
-        notes=f"Real-valued LS head accuracy: {ls_test_accuracy:.4f}%",
+        notes=(
+            f"{prefit_name} pre-binarization accuracy: {ls_test_accuracy:.4f}%; "
+            f"post-binarization scale+bias refit={ls_solver == 'ridge'}."
+        ),
     )

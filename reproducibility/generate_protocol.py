@@ -1,4 +1,5 @@
 from pathlib import Path
+import argparse
 import json
 
 import numpy as np
@@ -16,9 +17,35 @@ TRAIN_PROTOCOL_DIR = PROTOCOL_DIR / "train"
 
 
 def main():
+    parser = argparse.ArgumentParser(
+        description="Generate the fixed MNIST data-order protocol."
+    )
+    parser.add_argument(
+        "--overwrite",
+        action="store_true",
+        help="Replace existing manifest, test indices, and epoch permutations",
+    )
+    args = parser.parse_args()
 
-    PROTOCOL_DIR.mkdir(exist_ok=True)
-    TRAIN_PROTOCOL_DIR.mkdir(exist_ok=True)
+    expected_files = [
+        PROTOCOL_DIR / "manifest.json",
+        PROTOCOL_DIR / "test_indices.npy",
+        *[
+            TRAIN_PROTOCOL_DIR / f"epoch_{epoch:03d}.npy"
+            for epoch in range(NUM_EPOCHS)
+        ],
+    ]
+    existing_files = [path for path in expected_files if path.exists()]
+    if existing_files and not args.overwrite:
+        raise FileExistsError(
+            "Existing protocol files are protected from replacement: "
+            + ", ".join(map(str, existing_files[:8]))
+            + (" ..." if len(existing_files) > 8 else "")
+            + ". Pass --overwrite only when intentionally regenerating the protocol."
+        )
+
+    PROTOCOL_DIR.mkdir(parents=True, exist_ok=True)
+    TRAIN_PROTOCOL_DIR.mkdir(parents=True, exist_ok=True)
 
     print("[REPRO] Loading MNIST...")
 

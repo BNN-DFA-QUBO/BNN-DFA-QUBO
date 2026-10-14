@@ -1,8 +1,10 @@
 import torch
 import neal
 
+from models.ls_heads import fit_ridge_classifier
 
-def calculate_ls_scales(
+
+def calculate_legacy_ls_scales(
     H,
     labels,
     num_classes=10
@@ -94,6 +96,39 @@ def calculate_ls_scales(
         scales[class_id] = scale
 
     return scales
+
+
+
+
+# Backwards-compatible legacy API for diagnostics and historical scripts.
+def calculate_ls_scales(H, labels, num_classes=10):
+    return calculate_legacy_ls_scales(H, labels, num_classes=num_classes)
+
+def calculate_ridge_ls_scales(
+    H,
+    labels,
+    num_classes=10,
+    lambda_relative=1e-4,
+):
+    """Calculate QUBO alpha scales from the stable Ridge-LS fit.
+
+    The target encoding remains {0,1}, matching the historical scale
+    initialization; only the numerical LS solve is changed. The Ising objective
+    and post-annealing scale/bias fitting are unchanged.
+    """
+    hidden_size = H.shape[1]
+    W_ls = fit_ridge_classifier(
+        H=H,
+        labels=labels,
+        num_classes=num_classes,
+        lambda_relative=lambda_relative,
+    )
+    W_features = W_ls[:hidden_size, :]
+    scales = (
+        torch.linalg.vector_norm(W_features, dim=0)
+        / (hidden_size ** 0.5)
+    )
+    return scales.to(dtype=torch.float32, device="cpu")
 
 
 def build_ising_model(
