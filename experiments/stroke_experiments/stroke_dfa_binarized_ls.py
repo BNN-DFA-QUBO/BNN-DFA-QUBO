@@ -71,7 +71,7 @@ def fit_binarized_ridge_ls(H_train, y_train, lambda_relative=1e-4):
     return binary_weights, float(scale), float(bias), weights
 
 
-def train_binarized_ls(representation_path, ls_solver="ridge", lambda_relative=1e-4):
+def train_binarized_ls(representation_path, ls_solver="legacy", lambda_relative=1e-4):
     """Evaluate one selected binarized LS variant on a saved representation."""
     if ls_solver not in {"ridge", "legacy"}:
         raise ValueError("ls_solver must be 'ridge' or 'legacy'")
