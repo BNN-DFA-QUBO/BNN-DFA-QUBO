@@ -661,7 +661,7 @@ if __name__ == "__main__":
     # --------------------------------------------------------
 
     print(
-        "\nFitting real-valued least-squares head..."
+        f"\nFitting {('Ridge LS' if ls_solver == 'ridge' else 'legacy float32 LS')} head..."
     )
 
     if ls_solver == "ridge":
@@ -803,10 +803,12 @@ if __name__ == "__main__":
         f"{ls_test_accuracy:.2f}%"
     )
 
-    print(
-        f"BNN + DFA + Binarized Ridge LS Head: "
-        f"{binary_test_accuracy:.2f}%"
+    binary_head_label = (
+        "BNN + DFA + Binarized Ridge LS Head (refit scale+bias)"
+        if ls_solver == "ridge"
+        else "BNN + DFA + Binarized LS Head (legacy initializer and bias)"
     )
+    print(f"{binary_head_label}: {binary_test_accuracy:.2f}%")
 
     print(
         f"Difference from LS: "
@@ -826,5 +828,8 @@ if __name__ == "__main__":
         test_loss=None,
         training_time_sec=training_timer.seconds,
         parameter_count=count_parameters(model),
-        notes=f"{prefit_name} pre-binarization accuracy: {ls_test_accuracy:.4f}%; historical binary scale/bias treatment retained.",
+        notes=(
+            f"{prefit_name} pre-binarization accuracy: {ls_test_accuracy:.4f}%; "
+            f"post-binarization scale+bias refit={ls_solver == 'ridge'}."
+        ),
     )
