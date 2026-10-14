@@ -627,7 +627,7 @@ if __name__ == "__main__":
     print("\n==========================================")
     print(f"BNN + DFA: {dfa_test_accuracy:.2f}%")
     print(
-        f"BNN + DFA + Real-Valued LS Head: "
+        f"BNN + DFA + Ridge LS Head: "
         f"{test_ls_accuracy:.2f}%"
     )
     print(f"Difference: {difference:+.2f} percentage points")
