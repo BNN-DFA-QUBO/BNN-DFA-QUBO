@@ -108,10 +108,11 @@ The Ridge-LS solver uses CPU float64 and an augmented SVD-based least-squares sy
 ### Controlled multi-seed MNIST runs
 
 ```powershell
-python -m experiments.MNIST_experiments.run_mnist_controlled --seeds 42 123 456 789 999 --experiments dfa_least_squares dfa_binary_head bnn_dfa_qubo
+$stamp = Get-Date -Format "yyyyMMdd_HHmmss"
+python -m experiments.MNIST_experiments.run_mnist_controlled --seeds 42 123 456 789 999 --experiments dfa_least_squares dfa_binary_head bnn_dfa_qubo --output "data/results_diagnostic/mnist_controlled_$stamp.csv"
 ```
 
-This controlled runner produces a per-run CSV and a summary CSV under `data/`. Review the script before rerunning if those named outputs already exist, because the controlled-run files are written to their configured paths.
+This controlled runner produces a per-run CSV and a matching summary CSV beside it. It refuses to replace existing outputs. Use a new `--output` path for each run, or pass `--overwrite` only when replacement is intentional. You can override the summary path with `--summary-output`.
 
 ### Keep diagnostic outputs separate
 
@@ -207,7 +208,11 @@ Threshold selection evaluates the unique validation-score boundaries, so large g
 python -m experiments.stroke_experiments.plot_stroke_results
 ```
 
-The existing plotting script reads `data/stroke_controlled_results.csv` and writes PNG charts and a summary under `data/stroke_results/`. It plots balanced accuracy, PR-AUC, ROC-AUC, and F1. If the CSV was written to a custom output directory, copy/use the intended CSV path only after checking the plotting script's configured input.
+The plotting script reads `data/stroke_controlled_results.csv` by default and writes PNG charts and a summary under `data/stroke_results/`. It plots balanced accuracy, PR-AUC, ROC-AUC, and F1. Pass explicit paths for another result bundle; it refuses to overwrite an existing summary or plot unless `--overwrite` is supplied:
+
+```powershell
+python -m experiments.stroke_experiments.plot_stroke_results --input data/stroke_controlled_results.csv --output-dir data/stroke_results/run_1
+```
 
 ## 4. Cross-platform reproducibility
 
