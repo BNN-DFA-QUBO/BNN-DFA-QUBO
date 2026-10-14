@@ -202,17 +202,29 @@ python -m experiments.stroke_experiments.validate_stroke_ls_heads --seeds 42 123
 
 Threshold selection evaluates the unique validation-score boundaries, so large gaps or extreme scores do not cause a fixed-grid search to skip useful thresholds. If this diagnostic script changes, rerun it and keep the resulting CSVs distinct; the earlier Stroke validation CSV was generated using a coarser threshold grid and should not be treated as the final comparison.
 
-### Generate Stroke plots
+### Generate a new Stroke results bundle and plots
+
+The following PowerShell example saves the representations, controlled results CSV, and plots under a unique timestamped directory. It includes both binarized LS variants while training only one BNN+DFA representation per seed:
+
+```powershell
+$stamp = Get-Date -Format "yyyyMMdd_HHmmss"
+$runRoot = "data/stroke_runs/run_$stamp"
+$artifactDir = Join-Path $runRoot "stroke"
+$resultsCsv = Join-Path $runRoot "stroke_controlled_results.csv"
+$plotsDir = Join-Path $runRoot "plots"
+
+python -m experiments.stroke_experiments.run_stroke_controlled --output-dir $artifactDir --split-seed 42 --seeds 42 123 2024 7 99 --balancing random_oversample --ls-solver both
+
+python -m experiments.stroke_experiments.plot_stroke_results --input $resultsCsv --output-dir $plotsDir
+```
+
+The plotting script also supports the default paths:
 
 ```powershell
 python -m experiments.stroke_experiments.plot_stroke_results
 ```
 
-The plotting script reads `data/stroke_controlled_results.csv` by default and writes PNG charts and a summary under `data/stroke_results/`. It plots balanced accuracy, PR-AUC, ROC-AUC, and F1. Pass explicit paths for another result bundle; it refuses to overwrite an existing summary or plot unless `--overwrite` is supplied:
-
-```powershell
-python -m experiments.stroke_experiments.plot_stroke_results --input data/stroke_controlled_results.csv --output-dir data/stroke_results/run_1
-```
+It writes PNG charts for balanced accuracy, PR-AUC, ROC-AUC, and F1 plus a summary CSV. It refuses to overwrite an existing summary or plot unless `--overwrite` is supplied; choose a new `--output-dir` for a separate run.
 
 ## 4. Cross-platform reproducibility
 
