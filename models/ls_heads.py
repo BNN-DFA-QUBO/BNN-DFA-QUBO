@@ -1,9 +1,8 @@
-"""LS heads for MNIST: legacy float32 LS and validation-selected ridge LS.
+"""Numerically robust least-squares classifier heads for MNIST.
 
-The selector is intended for research diagnostics and uses only a fit/validation
-split of the training representations. The held-out test set is not used to
-select lambda. Use select_ridge_lambda() on training data, then refit the chosen
-lambda on the complete training representation before final test evaluation.
+The ridge solver uses CPU float64 and an augmented least-squares system, not
+normal equations. The intercept is not penalized. Lambda selection must use
+training/validation representations only; do not choose hyperparameters on test.
 """
 from __future__ import annotations
 
@@ -22,16 +21,24 @@ class RidgeSelection:
 
 
 def _augmented_features(H: torch.Tensor) -> torch.Tensor:
-    """Append intercept column; preserve caller's device and use float64."""
-    H = H.detach().to(dtype=torch.float64)
+    H = H.detach().to(device="cpu", dtype=torch.float64)
     return torch.cat(
-        [H, torch.ones((H.shape[0], 1), dtype=H.dtype, device=H.device)],
+        [H, torch.ones((H.shape[0], 1), dtype=torch.float64)],
         dim=1,
     )
 
 
-def _targets(labels: torch.Tensor, num_classes: int, *, dtype, device):
-    return F.one_hot(labels.to(device=device, dtype=torch.long), num_classes).to(dtype=dtype)
+def _targets(labels: torch.Tensor, num_classes: int) -> torch.Tensor:
+    labels = labels.detach().to(device="cpu", dtype=torch.long)
+    return F.one_hot(labels, num_classes=num_classes).to(torch.float64)
+
+
+def _mean_feature_energy(H: torch.Tensor) -> torch.Tensor:
+    H = H.detach().to(device="cpu", dtype=torch.float64)
+    energy = (H * H).sum(dim=0).mean()
+    if not torch.isfinite(energy) or energy <= 0:
+        raise ValueError("Feature energy is zero or non-finite")
+    return energy
 
 
 def fit_ridge_classifier(
@@ -40,49 +47,52 @@ def fit_ridge_classifier(
     num_classes: int = 10,
     lambda_relative: float = 1e-4,
 ) -> torch.Tensor:
-    """Fit multi-output ridge LS with an unpenalized intercept.
+    """Fit ridge LS with an unpenalized intercept.
 
-    lambda_actual = lambda_relative * mean(diag(H.T @ H)).
-    Solve on CPU float64 for numerically robust, predictable behavior across
-    machines; returned matrix is CPU float64 with shape [n_features+1, classes].
+    lambda_actual = lambda_relative * mean_j(sum_i H[i,j]**2).
+
+    The objective is ||[H,1]W - Y||_F^2 + lambda_actual*||W_features||_F^2.
+    The regularizer is added as extra rows to the least-squares problem, which
+    avoids forming H.T @ H and therefore avoids squaring the condition number.
+    Returns CPU float64 weights with shape [n_features + 1, num_classes].
     """
     if lambda_relative < 0:
         raise ValueError("lambda_relative must be >= 0")
 
     H64 = H.detach().to(device="cpu", dtype=torch.float64)
-    y = labels.detach().to(device="cpu", dtype=torch.long)
     X = _augmented_features(H64)
-    Y = _targets(y, num_classes, dtype=torch.float64, device="cpu")
+    Y = _targets(labels, num_classes)
 
-    # lambda=0 is least squares and is handled by an SVD driver, not normal
-    # equations, to avoid squaring the condition number.
     if lambda_relative == 0:
-        return torch.linalg.lstsq(X, Y, driver="gelsd", rcond=1e-6).solution
+        return torch.linalg.lstsq(
+            X, Y, driver="gelsd", rcond=1e-6
+        ).solution
 
-    gram = X.T @ X
-    rhs = X.T @ Y
-    mean_feature_energy = gram.diagonal()[:-1].mean()
-    if not torch.isfinite(mean_feature_energy) or mean_feature_energy <= 0:
-        raise ValueError("Feature energy is zero or non-finite")
+    p = H64.shape[1]
+    lam_actual = float(lambda_relative) * _mean_feature_energy(H64)
 
-    reg = torch.zeros_like(gram)
-    idx = torch.arange(gram.shape[0] - 1)
-    reg[idx, idx] = lambda_relative * mean_feature_energy
-    # Avoid explicit inverse; torch.linalg.solve uses a factorization.
-    return torch.linalg.solve(gram + reg, rhs)
+    # p regularization rows, with no penalty on the final intercept column.
+    reg_rows = torch.zeros((p, p + 1), dtype=torch.float64)
+    reg_rows[torch.arange(p), torch.arange(p)] = lam_actual ** 0.5
+    augmented_A = torch.cat([X, reg_rows], dim=0)
+    augmented_Y = torch.cat(
+        [Y, torch.zeros((p, num_classes), dtype=torch.float64)], dim=0
+    )
+
+    return torch.linalg.lstsq(
+        augmented_A, augmented_Y, driver="gelsd", rcond=1e-12
+    ).solution
 
 
 def predict_scores(H: torch.Tensor, weights: torch.Tensor) -> torch.Tensor:
-    """Return class scores on CPU float64."""
-    H64 = H.detach().to(device="cpu", dtype=torch.float64)
-    X = _augmented_features(H64)
+    X = _augmented_features(H)
     W = weights.detach().to(device="cpu", dtype=torch.float64)
     return X @ W
 
 
 def accuracy_from_scores(scores: torch.Tensor, labels: torch.Tensor) -> float:
-    labels_cpu = labels.detach().to(device="cpu", dtype=torch.long)
-    return 100.0 * (scores.argmax(dim=1) == labels_cpu).double().mean().item()
+    y = labels.detach().to(device="cpu", dtype=torch.long)
+    return 100.0 * (scores.argmax(dim=1) == y).double().mean().item()
 
 
 def select_ridge_lambda(
@@ -94,10 +104,7 @@ def select_ridge_lambda(
     num_classes: int = 10,
     lambdas: Iterable[float] = (1e-8, 1e-6, 1e-4),
 ) -> RidgeSelection:
-    """Select lambda solely by validation accuracy.
-
-    Ties are resolved deterministically in favor of stronger regularization.
-    """
+    """Select lambda solely by validation accuracy; ties favor stronger ridge."""
     values = sorted({float(v) for v in lambdas})
     if not values or any(v <= 0 for v in values):
         raise ValueError("Provide one or more positive relative lambda values")
@@ -108,11 +115,7 @@ def select_ridge_lambda(
         scores[lam] = accuracy_from_scores(predict_scores(H_val, W), y_val)
 
     selected = sorted(values, key=lambda lam: (-scores[lam], -lam))[0]
-    return RidgeSelection(
-        selected_lambda=selected,
-        validation_accuracy=scores[selected],
-        scores=scores,
-    )
+    return RidgeSelection(selected, scores[selected], scores)
 
 
 def fit_selected_ridge_on_all_training(
@@ -121,8 +124,7 @@ def fit_selected_ridge_on_all_training(
     selection: RidgeSelection,
     num_classes: int = 10,
 ) -> torch.Tensor:
-    """Refit selected model on all train representations; do not inspect test here."""
+    """Refit selected lambda on all training representations."""
     return fit_ridge_classifier(
-        H_train, y_train, num_classes=num_classes,
-        lambda_relative=selection.selected_lambda,
+        H_train, y_train, num_classes, selection.selected_lambda
     )
