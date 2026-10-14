@@ -120,6 +120,9 @@ def main():
     elif not summary_path.is_absolute():
         summary_path = ROOT / summary_path
 
+    if output_path.resolve() == summary_path.resolve():
+        parser.error("--output and --summary-output must be different paths")
+
     existing = [str(path) for path in (output_path, summary_path) if path.exists()]
     if existing and not args.overwrite:
         raise FileExistsError(
@@ -133,12 +136,12 @@ def main():
 
     rows = []
     for seed in args.seeds:
-        print("\\n" + "=" * 70)
+        print("\n" + "=" * 70)
         print(f"MNIST CONTROLLED RUN — SEED {seed}")
         print("=" * 70)
 
         for experiment in args.experiments:
-            print("\\n" + "-" * 70)
+            print("\n" + "-" * 70)
             print(f"Running {DISPLAY_NAMES[experiment]}")
             print("-" * 70)
             rows.append(run_one(experiment, seed))
@@ -158,7 +161,7 @@ def main():
     )
     summary.to_csv(summary_path, index=False)
 
-    print("\\n" + "=" * 70)
+    print("\n" + "=" * 70)
     print("MNIST CONTROLLED EXPERIMENT COMPLETE")
     print("=" * 70)
     print(f"Raw results: {output_path}")
