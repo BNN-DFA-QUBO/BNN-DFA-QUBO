@@ -1,8 +1,10 @@
 """Stroke Binarized-LS head with legacy and stable Ridge-LS variants.
 
-Default: float64 Ridge LS -> sign-binarized feature weights -> refit scalar
-scale and intercept using training representations only. Validation chooses
-the final score threshold; test data are used only for metric reporting.
+The default preserves the historical NumPy LS -> sign-binarized weights ->
+retained intercept behavior. The candidate Ridge path is selected explicitly
+with --ls-solver ridge; it refits scale and intercept on training
+representations only. Validation chooses the score threshold, and test data
+are used only for final metric reporting.
 """
 import argparse
 import sys
