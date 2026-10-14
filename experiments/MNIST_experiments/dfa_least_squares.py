@@ -1,6 +1,8 @@
 import torch
 import torch.nn.functional as F
 
+from models.ls_heads import fit_ridge_classifier
+
 from models.bnn import BNN
 from models.dfa import DFAClassifier, DFAFunction
 from utils.MNIST.data import get_mnist_loaders
@@ -286,7 +288,7 @@ def collect_hidden_features(
 # FIT LEAST-SQUARES CLASSIFIER
 # ============================================================
 
-def fit_least_squares_classifier(
+def fit_legacy_least_squares_classifier(
     H,
     labels,
     num_classes=10
@@ -343,6 +345,26 @@ def fit_least_squares_classifier(
     return solution
 
 
+def fit_least_squares_classifier(
+    H,
+    labels,
+    num_classes=10,
+    lambda_relative=1e-4,
+):
+    """Fit the new regularized LS head using the stable shared solver.
+
+    Kept under the old function name so existing call sites continue working.
+    New experiment outputs must identify this method as Ridge LS. Use
+    fit_legacy_least_squares_classifier() for the historical float32 solver.
+    """
+    return fit_ridge_classifier(
+        H=H,
+        labels=labels,
+        num_classes=num_classes,
+        lambda_relative=lambda_relative,
+    )
+
+
 # ============================================================
 # EVALUATE LEAST-SQUARES CLASSIFIER
 # ============================================================
@@ -363,7 +385,8 @@ def evaluate_least_squares(
     correct = 0
     total = 0
 
-    classifier = classifier.to(device)
+    # The stable head is fitted in CPU float64; inference uses model dtype.
+    classifier = classifier.to(device=device, dtype=torch.float32)
 
     with torch.no_grad():
 
@@ -455,7 +478,7 @@ def evaluate_training_fit(
 
     # Classifier output
     outputs = (
-        H_aug @ classifier
+        H_aug.to(dtype=classifier.dtype) @ classifier
     )
 
     predictions = (
@@ -476,7 +499,7 @@ def evaluate_training_fit(
 
     append_result(
         experiment="dfa_least_squares",
-        method="BNN + DFA + Real-Valued LS Head",
+        method="BNN + DFA + Ridge LS Head",
         seed=seed,
         test_accuracy=test_accuracy,
         test_loss=test_loss if "test_loss" in locals() else None,
@@ -564,7 +587,7 @@ if __name__ == "__main__":
 
     print("Training hidden feature shape:", H_train.shape)
 
-    print("\nFitting real-valued least-squares classifier...")
+    print("\nFitting numerically stable Ridge LS classifier...")
 
     classifier = fit_least_squares_classifier(
         H=H_train,
@@ -581,7 +604,7 @@ if __name__ == "__main__":
     )
 
     print(
-        f"\nLeast-Squares Training Accuracy: "
+        f"\nRidge LS Training Accuracy: "
         f"{train_ls_accuracy:.2f}%"
     )
 
@@ -595,7 +618,7 @@ if __name__ == "__main__":
     )
 
     print(
-        f"Least-Squares Test Accuracy: "
+        f"Ridge LS Test Accuracy: "
         f"{test_ls_accuracy:.2f}%"
     )
 
