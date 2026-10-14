@@ -1,3 +1,4 @@
+import argparse
 import torch
 import torch.nn.functional as F
 
@@ -5,7 +6,7 @@ from models.bnn import BNN
 from models.dfa import DFAClassifier, DFAFunction
 from models.ls_heads import fit_ridge_classifier
 from utils.MNIST.data import get_mnist_loaders
-from utils.MNIST.seed import set_seed, get_seed
+from utils.MNIST.seed import set_seed
 
 from experiments.MNIST_experiments.results_utils import (
     append_result,
@@ -552,7 +553,7 @@ def evaluate_binary_training_fit(
 
     append_result(
         experiment="dfa_binary_head",
-        method="BNN + DFA + Binarized Ridge LS Head",
+        method=method_name,
         seed=seed,
         test_accuracy=test_accuracy,
         test_loss=test_loss if "test_loss" in locals() else None,
@@ -567,10 +568,17 @@ if __name__ == "__main__":
     # Reproducibility
     # --------------------------------------------------------
 
-    seed = get_seed()
+    parser = argparse.ArgumentParser(description="MNIST BNN+DFA Binarized LS head")
+    parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--ls-solver", choices=("ridge", "legacy"), default="ridge",
+                        help="solver used for the initial real-valued LS fit")
+    args = parser.parse_args()
+    seed = args.seed
+    ls_solver = args.ls_solver
     set_seed(seed)
 
     print(f"Using seed: {seed}")
+    print(f"Initial LS solver: {ls_solver}")
 
     # --------------------------------------------------------
     # Device
@@ -674,15 +682,16 @@ if __name__ == "__main__":
         "\nFitting real-valued least-squares head..."
     )
 
-    classifier = fit_least_squares(
-        H_train,
-        y_train
-    )
+    if ls_solver == "ridge":
+        classifier = fit_least_squares(H_train, y_train)
+        method_name = "BNN + DFA + Binarized Ridge LS Head"
+        prefit_name = "Ridge LS"
+    else:
+        classifier = fit_legacy_least_squares(H_train, y_train)
+        method_name = "BNN + DFA + Binarized LS Head (legacy LS initialization)"
+        prefit_name = "Legacy LS"
 
-    print(
-        "LS classifier shape:",
-        classifier.shape
-    )
+    print("Initial classifier shape:", classifier.shape)
 
     # --------------------------------------------------------
     # Global variables used by binary conversion
@@ -710,10 +719,8 @@ if __name__ == "__main__":
         device
     )
 
-    print(
-        f"Ridge LS Test Accuracy: "
-        f"{ls_test_accuracy:.2f}%"
-    )
+    prefit_accuracy_label = "Ridge LS Test Accuracy" if ls_solver == "ridge" else "Least-Squares Test Accuracy"
+    print(f"{prefit_accuracy_label}: {ls_test_accuracy:.2f}%")
 
     # --------------------------------------------------------
     # Binarize LS classifier
