@@ -71,7 +71,7 @@ CONTROLLED_METHOD_METADATA = {
 
 
 def run_experiments(seeds=None, split_seed=SPLIT_SEED, balancing_method=BALANCING_METHOD, overwrite=False,
-                    output_dir=DATA_DIR, ls_solver="legacy"):
+                    output_dir=DATA_DIR, ls_solver="ridge"):
     output_dir = Path(output_dir)
     results_path = output_dir.parent / "stroke_controlled_results.csv"
     if ls_solver not in {"legacy", "ridge", "both"}:
@@ -314,8 +314,8 @@ if __name__ == "__main__":
     parser.add_argument("--split-seed", type=int, default=SPLIT_SEED)
     parser.add_argument("--seeds", type=int, nargs="+", default=SEEDS, help="BNN/DFA model-training seeds")
     parser.add_argument("--balancing", choices=("random_oversample", "none"), default=BALANCING_METHOD)
-    parser.add_argument("--ls-solver", choices=("legacy", "ridge", "both"), default="legacy",
-                        help="Stroke Binarized-LS implementation(s); both evaluates legacy and Ridge variants on each same representation")
+    parser.add_argument("--ls-solver", choices=("legacy", "ridge", "both"), default="ridge",
+                        help="Stroke Binarized-LS implementation(s); default is Ridge; both evaluates legacy and Ridge variants on each same representation")
     parser.add_argument("--overwrite", action="store_true", help="Replace existing outputs and regenerate incompatible preprocessing artifacts")
     parser.add_argument("--output-dir", type=Path, default=DATA_DIR,
                         help="Directory for preprocessing and representation artifacts (default: data/stroke)")
