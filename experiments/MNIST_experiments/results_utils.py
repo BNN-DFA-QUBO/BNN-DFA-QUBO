@@ -69,7 +69,7 @@ def append_result(
     notes: str = "",
 ) -> None:
     """Append one final MNIST result to the shared CSV."""
-    RESULTS_DIR.mkdir(parents=True, exist_ok=True)
+    RESULTS_CSV.parent.mkdir(parents=True, exist_ok=True)
 
     row = {
         "experiment": experiment,
