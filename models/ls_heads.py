@@ -41,6 +41,53 @@ def _mean_feature_energy(H: torch.Tensor) -> torch.Tensor:
     return energy
 
 
+def fit_ridge_regression(
+    H: torch.Tensor,
+    targets: torch.Tensor,
+    lambda_relative: float = 1e-4,
+) -> torch.Tensor:
+    """Fit numerically stable ridge least-squares to arbitrary continuous targets.
+
+    This is the shared scalar-/multi-output solver. targets may have shape
+    [n_samples] or [n_samples, n_outputs]. The final intercept is unpenalized.
+
+    The penalty is scaled as lambda_relative * mean_j(sum_i H[i,j]**2) and
+    implemented by adding regularization rows to the least-squares system,
+    not by forming normal equations. The solve runs on CPU float64 with the
+    SVD-based gelsd driver. Returns coefficients of shape
+    [n_features + 1, n_outputs].
+    """
+    if not torch.isfinite(torch.tensor(float(lambda_relative))) or lambda_relative < 0:
+        raise ValueError("lambda_relative must be finite and >= 0")
+
+    H64 = H.detach().to(device="cpu", dtype=torch.float64)
+    Y = torch.as_tensor(targets).detach().to(device="cpu", dtype=torch.float64)
+    if Y.ndim == 1:
+        Y = Y.unsqueeze(1)
+    if Y.ndim != 2 or Y.shape[0] != H64.shape[0]:
+        raise ValueError("targets must have shape [n_samples] or [n_samples, n_outputs]")
+    if H64.ndim != 2 or H64.shape[0] == 0 or H64.shape[1] == 0:
+        raise ValueError("H must be a non-empty [n_samples, n_features] matrix")
+    if not torch.isfinite(H64).all() or not torch.isfinite(Y).all():
+        raise ValueError("H and targets must contain only finite values")
+
+    X = _augmented_features(H64)
+    if lambda_relative == 0:
+        return torch.linalg.lstsq(X, Y, driver="gelsd", rcond=1e-6).solution
+
+    p = H64.shape[1]
+    lam_actual = float(lambda_relative) * float(_mean_feature_energy(H64))
+    reg_rows = torch.zeros((p, p + 1), dtype=torch.float64)
+    reg_rows[torch.arange(p), torch.arange(p)] = lam_actual ** 0.5
+    augmented_A = torch.cat([X, reg_rows], dim=0)
+    augmented_Y = torch.cat(
+        [Y, torch.zeros((p, Y.shape[1]), dtype=torch.float64)], dim=0
+    )
+    return torch.linalg.lstsq(
+        augmented_A, augmented_Y, driver="gelsd", rcond=1e-12
+    ).solution
+
+
 def fit_ridge_classifier(
     H: torch.Tensor,
     labels: torch.Tensor,
