@@ -74,12 +74,17 @@ def run_experiments(seeds=None, split_seed=SPLIT_SEED, balancing_method=BALANCIN
                     output_dir=DATA_DIR, ls_solver="legacy"):
     output_dir = Path(output_dir)
     results_path = output_dir.parent / "stroke_controlled_results.csv"
-    if ls_solver not in {"legacy", "ridge"}:
-        raise ValueError("ls_solver must be 'legacy' or 'ridge'")
-    binary_method_name = (
-        "Binarized Ridge LS (refit scale+bias)" if ls_solver == "ridge"
-        else "Binarized LS"
-    )
+    if ls_solver not in {"legacy", "ridge", "both"}:
+        raise ValueError("ls_solver must be 'legacy', 'ridge', or 'both'")
+    if ls_solver == "legacy":
+        binary_methods = [("Binarized LS", "legacy")]
+    elif ls_solver == "ridge":
+        binary_methods = [("Binarized Ridge LS (refit scale+bias)", "ridge")]
+    else:
+        binary_methods = [
+            ("Binarized LS", "legacy"),
+            ("Binarized Ridge LS (refit scale+bias)", "ridge"),
+        ]
     seeds = list(SEEDS if seeds is None else seeds)
     representation_paths = [output_dir / f"stroke_dfa_representation_seed_{seed}.pt" for seed in seeds]
     model_result_paths = [output_dir / f"stroke_bnn_dfa_seed_{seed}.json" for seed in seeds]
@@ -142,54 +147,29 @@ def run_experiments(seeds=None, split_seed=SPLIT_SEED, balancing_method=BALANCIN
         )
 
         methods = [
-            (
-                "Real LS",
-                train_real_ls,
-                False
-            ),
-            (
-                binary_method_name,
-                train_binarized_ls,
-                False
-            ),
-            (
-                "Direct Binary",
-                train_direct_binary,
-                True
-            ),
-            (
-                "STE Binary",
-                train_ste_binary,
-                True
-            ),
-            (
-                "QUBO Binary",
-                train_qubo,
-                True
-            )
+            ("Real LS", train_real_ls, "single"),
+            *[
+                (method_name, train_binarized_ls, solver)
+                for method_name, solver in binary_methods
+            ],
+            ("Direct Binary", train_direct_binary, "seed"),
+            ("STE Binary", train_ste_binary, "seed"),
+            ("QUBO Binary", train_qubo, "seed"),
         ]
 
-        for method_name, method_function, uses_seed in methods:
+        for method_name, method_function, method_mode in methods:
 
             print()
             print(
                 f"Running {method_name}..."
             )
 
-            if uses_seed:
-                result = method_function(
-                    representation_path,
-                    seed
-                )
-            elif method_name in ("Binarized LS", "Binarized Ridge LS (refit scale+bias)"):
-                result = method_function(
-                    representation_path,
-                    ls_solver=ls_solver
-                )
+            if method_mode == "seed":
+                result = method_function(representation_path, seed)
+            elif method_mode in ("legacy", "ridge"):
+                result = method_function(representation_path, ls_solver=method_mode)
             else:
-                result = method_function(
-                    representation_path
-                )
+                result = method_function(representation_path)
 
             result["method"] = method_name
             result["experiment_type"] = "controlled_end_to_end_head_comparison"
@@ -334,8 +314,8 @@ if __name__ == "__main__":
     parser.add_argument("--split-seed", type=int, default=SPLIT_SEED)
     parser.add_argument("--seeds", type=int, nargs="+", default=SEEDS, help="BNN/DFA model-training seeds")
     parser.add_argument("--balancing", choices=("random_oversample", "none"), default=BALANCING_METHOD)
-    parser.add_argument("--ls-solver", choices=("legacy", "ridge"), default="legacy",
-                        help="Stroke Binarized-LS implementation; default preserves legacy results")
+    parser.add_argument("--ls-solver", choices=("legacy", "ridge", "both"), default="legacy",
+                        help="Stroke Binarized-LS implementation(s); both evaluates legacy and Ridge variants on each same representation")
     parser.add_argument("--overwrite", action="store_true", help="Replace existing outputs and regenerate incompatible preprocessing artifacts")
     parser.add_argument("--output-dir", type=Path, default=DATA_DIR,
                         help="Directory for preprocessing and representation artifacts (default: data/stroke)")
