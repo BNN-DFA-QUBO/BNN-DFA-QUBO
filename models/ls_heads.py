@@ -94,41 +94,18 @@ def fit_ridge_classifier(
     num_classes: int = 10,
     lambda_relative: float = 1e-4,
 ) -> torch.Tensor:
-    """Fit ridge LS with an unpenalized intercept.
+    """Fit multi-class Ridge LS with one-hot targets and an unpenalized intercept.
 
-    lambda_actual = lambda_relative * mean_j(sum_i H[i,j]**2).
-
-    The objective is ||[H,1]W - Y||_F^2 + lambda_actual*||W_features||_F^2.
-    The regularizer is added as extra rows to the least-squares problem, which
-    avoids forming H.T @ H and therefore avoids squaring the condition number.
     Returns CPU float64 weights with shape [n_features + 1, num_classes].
+    The numerical solve is delegated to fit_ridge_regression so scalar Stroke
+    and multi-class MNIST heads share the same augmented SVD implementation.
     """
-    if lambda_relative < 0:
-        raise ValueError("lambda_relative must be >= 0")
-
-    H64 = H.detach().to(device="cpu", dtype=torch.float64)
-    X = _augmented_features(H64)
+    if num_classes < 2:
+        raise ValueError("num_classes must be at least 2")
     Y = _targets(labels, num_classes)
-
-    if lambda_relative == 0:
-        return torch.linalg.lstsq(
-            X, Y, driver="gelsd", rcond=1e-6
-        ).solution
-
-    p = H64.shape[1]
-    lam_actual = float(lambda_relative) * _mean_feature_energy(H64)
-
-    # p regularization rows, with no penalty on the final intercept column.
-    reg_rows = torch.zeros((p, p + 1), dtype=torch.float64)
-    reg_rows[torch.arange(p), torch.arange(p)] = lam_actual ** 0.5
-    augmented_A = torch.cat([X, reg_rows], dim=0)
-    augmented_Y = torch.cat(
-        [Y, torch.zeros((p, num_classes), dtype=torch.float64)], dim=0
-    )
-
-    return torch.linalg.lstsq(
-        augmented_A, augmented_Y, driver="gelsd", rcond=1e-12
-    ).solution
+    if Y.shape[0] != H.shape[0]:
+        raise ValueError("labels length must match H rows")
+    return fit_ridge_regression(H, Y, lambda_relative=lambda_relative)
 
 
 def predict_scores(H: torch.Tensor, weights: torch.Tensor) -> torch.Tensor:
