@@ -498,15 +498,6 @@ def evaluate_training_fit(
 # ============================================================
 
 
-    append_result(
-        experiment="dfa_least_squares",
-        method=method_name,
-        seed=seed,
-        test_accuracy=test_accuracy,
-        test_loss=test_loss if "test_loss" in locals() else None,
-        training_time_sec=training_timer.seconds if "training_timer" in locals() else None,
-        parameter_count=count_parameters(model),
-    )
 
 
 if __name__ == "__main__":
@@ -650,7 +641,7 @@ if __name__ == "__main__":
 
     append_result(
         experiment="dfa_least_squares",
-        method="BNN + DFA + Real-Valued LS Head",
+        method=method_name,
         seed=seed,
         test_accuracy=test_ls_accuracy,
         test_loss=None,
