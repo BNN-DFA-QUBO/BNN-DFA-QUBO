@@ -94,40 +94,75 @@ def main():
         choices=DEFAULT_EXPERIMENTS,
         default=DEFAULT_EXPERIMENTS,
     )
+    parser.add_argument(
+        "--output",
+        type=Path,
+        default=RESULTS_PATH,
+        help="Raw CSV output path (default: data/mnist_controlled_results.csv)",
+    )
+    parser.add_argument(
+        "--summary-output",
+        type=Path,
+        default=None,
+        help="Summary CSV path (default: <output-stem>_summary.csv beside raw CSV)",
+    )
+    parser.add_argument(
+        "--overwrite",
+        action="store_true",
+        help="Replace the selected raw/summary CSVs if they already exist",
+    )
     args = parser.parse_args()
 
-    RESULTS_PATH.parent.mkdir(parents=True, exist_ok=True)
+    output_path = args.output if args.output.is_absolute() else ROOT / args.output
+    summary_path = args.summary_output
+    if summary_path is None:
+        summary_path = output_path.with_name(f"{output_path.stem}_summary.csv")
+    elif not summary_path.is_absolute():
+        summary_path = ROOT / summary_path
+
+    existing = [str(path) for path in (output_path, summary_path) if path.exists()]
+    if existing and not args.overwrite:
+        raise FileExistsError(
+            "Refusing to replace existing controlled MNIST outputs: "
+            + ", ".join(existing)
+            + ". Choose new --output/--summary-output paths or pass --overwrite."
+        )
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    summary_path.parent.mkdir(parents=True, exist_ok=True)
 
     rows = []
     for seed in args.seeds:
-        print("\n" + "=" * 70)
+        print("\\n" + "=" * 70)
         print(f"MNIST CONTROLLED RUN — SEED {seed}")
         print("=" * 70)
 
         for experiment in args.experiments:
-            print("\n" + "-" * 70)
+            print("\\n" + "-" * 70)
             print(f"Running {DISPLAY_NAMES[experiment]}")
             print("-" * 70)
             rows.append(run_one(experiment, seed))
 
+    if not rows:
+        raise RuntimeError("No experiment results were collected.")
+
     df = pd.DataFrame(rows)
-    df.to_csv(RESULTS_PATH, index=False)
+    df.to_csv(output_path, index=False)
 
     summary = (
         df.groupby(["experiment", "method"])["test_accuracy"]
-        .agg(["mean", "std", "min", "max"])
+        .agg(["count", "mean", "std", "min", "max"])
         .reset_index()
+        .rename(columns={"count": "runs", "mean": "accuracy_mean", "std": "accuracy_std",
+                         "min": "accuracy_min", "max": "accuracy_max"})
     )
-    summary.to_csv(
-        ROOT / "data" / "mnist_controlled_results_summary.csv",
-        index=False,
-    )
+    summary.to_csv(summary_path, index=False)
 
-    print("\n" + "=" * 70)
+    print("\\n" + "=" * 70)
     print("MNIST CONTROLLED EXPERIMENT COMPLETE")
     print("=" * 70)
-    print(f"Raw results: {RESULTS_PATH}")
-    print(f"Summary:     {ROOT / 'data' / 'mnist_controlled_results_summary.csv'}")
+    print(f"Raw results: {output_path}")
+    print(f"Summary:     {summary_path}")
 
 
 if __name__ == "__main__":
