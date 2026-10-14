@@ -169,18 +169,18 @@ def compare_representation(seed, data, args, representation_path, representation
         score_continuous(H_val, legacy_weights),
         score_continuous(H_test, legacy_weights),
         legacy_fit_seconds,
-        "numpy.linalg.lstsq; {0,1} targets; fitted intercept",
+        "unregularized NumPy float64 least squares; {0,1} targets; fitted intercept",
     ))
 
     started = time.perf_counter()
     ridge_weights = fit_ridge_ls(H_train, y_train, args.lambda_relative)
     ridge_fit_seconds = time.perf_counter() - started
     candidates.append((
-        "Ridge LS (float64 SVD)",
+        "Ridge LS (regularized SVD)",
         score_continuous(H_val, ridge_weights),
         score_continuous(H_test, ridge_weights),
         ridge_fit_seconds,
-        f"augmented SVD ridge; lambda_relative={args.lambda_relative}; {{0,1}} targets; unpenalized intercept",
+        f"float64 augmented SVD with ridge regularization; lambda_relative={args.lambda_relative}; {{0,1}} targets; unpenalized intercept",
     ))
 
     started = time.perf_counter()
@@ -193,7 +193,7 @@ def compare_representation(seed, data, args, representation_path, representation
         old_val_scores,
         old_test_scores,
         legacy_binary_fit_seconds,
-        "NumPy LS; sign feature weights; retains continuous LS intercept",
+        "unregularized NumPy float64 LS; sign feature weights; retains continuous LS intercept",
     ))
 
     started = time.perf_counter()
