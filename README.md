@@ -163,12 +163,12 @@ Each model seed trains a DFA representation; all classifier heads for that seed 
 
 ### Stroke LS variants
 
-The existing Stroke Real-LS path is an unregularized NumPy least-squares fit with `{0,1}` targets. The candidate Ridge LS path uses the shared float64 augmented SVD solver with regularization. The Stroke Ridge-Binarized-LS candidate also refits the scale and intercept after binarization. These changes are not assumed to be improvements merely because Ridge LS helped in an MNIST experiment.
+The existing Stroke Real-LS path is an unregularized NumPy least-squares fit with `{0,1}` targets and remains the default because it outperformed Ridge LS in the five-seed diagnostic. The Stroke Binarized Ridge-LS path uses the shared float64 augmented SVD solver, signs the feature weights, and refits the scale and intercept using training representations only. In the corrected five-seed diagnostic, it improved mean test balanced accuracy and ROC-AUC over legacy Binarized LS and reduced seed-to-seed variation.
 
 For a saved representation:
 
 ```powershell
-# Existing legacy binarized LS implementation (default pending corrected validation)
+# Existing legacy binarized LS implementation
 python -m experiments.stroke_experiments.stroke_dfa_binarized_ls --representation data/stroke/stroke_dfa_representation_seed_42.pt --ls-solver legacy
 
 # Candidate stable Ridge-LS weights and refitted scale/bias
@@ -178,11 +178,11 @@ python -m experiments.stroke_experiments.stroke_dfa_binarized_ls --representatio
 The controlled runner supports the same choice:
 
 ```powershell
-# Default: preserve historical Stroke result method labels and behavior
-python -m experiments.stroke_experiments.run_stroke_controlled --split-seed 42 --seeds 42 123 2024 7 99 --ls-solver legacy
-
-# Explicitly run the candidate Ridge-binarized head
+# Default: validated Ridge-derived binary LS head
 python -m experiments.stroke_experiments.run_stroke_controlled --split-seed 42 --seeds 42 123 2024 7 99 --ls-solver ridge
+
+# Reproduce the previous binarized-LS implementation
+python -m experiments.stroke_experiments.run_stroke_controlled --split-seed 42 --seeds 42 123 2024 7 99 --ls-solver legacy
 ```
 
 ### Paired LS-head validation
@@ -264,6 +264,4 @@ The `data/` directory is Git-ignored to avoid committing raw datasets, large rep
 
 ## 7. Current LS validation status on the feature branch
 
-The stable MNIST Ridge-LS path has been evaluated across multiple seeds. The paired Stroke diagnostic is now being tightened to select thresholds at score boundaries rather than on a fixed linear grid. Until that corrected comparison has been rerun and reviewed, the Stroke controlled runner keeps the legacy Binarized-LS implementation as its default and exposes the Ridge-derived variant through `--ls-solver ridge`. The continuous Stroke Real-LS default remains unchanged.
-
-Do not merge this feature branch into `main` until the corrected Stroke validation, synthetic tests, existing Stroke preprocessing tests, and README commands have been run locally and their results reviewed.
+The stable MNIST Ridge-LS path has been evaluated across multiple seeds. The corrected five-seed Stroke comparison selects thresholds using exact validation-score boundaries. Ridge-derived Binarized LS improved mean test balanced accuracy (71.59% vs. 63.35%) and mean ROC-AUC (78.26% vs. 55.65%) over legacy Binarized LS, with markedly lower seed-to-seed variation. The controlled Stroke runner therefore defaults to `--ls-solver ridge`; use `--ls-solver legacy` to reproduce the previous method or `--ls-solver both` to record both binary heads on each representation. The continuous Stroke Real-LS default remains unchanged because regularized Ridge LS did not improve its mean balanced accuracy.
