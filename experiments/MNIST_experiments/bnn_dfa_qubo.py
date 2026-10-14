@@ -682,7 +682,7 @@ if __name__ == "__main__":
 
     append_result(
         experiment="bnn_dfa_qubo",
-        method="BNN + DFA + QUBO",
+        method=result_method,
         seed=seed,
         test_accuracy=test_accuracy,
         test_loss=None,
