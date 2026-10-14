@@ -3,6 +3,7 @@ import torch.nn.functional as F
 
 from models.bnn import BNN
 from models.dfa import DFAClassifier, DFAFunction
+from models.ls_heads import fit_ridge_classifier
 from utils.MNIST.data import get_mnist_loaders
 from utils.MNIST.seed import set_seed, get_seed
 
@@ -205,7 +206,7 @@ def collect_hidden_features(
 # LEAST-SQUARES CLASSIFIER
 # ============================================================
 
-def fit_least_squares(
+def fit_legacy_least_squares(
     H,
     labels,
     num_classes=10
@@ -249,8 +250,23 @@ def fit_least_squares(
     return W
 
 
+def fit_least_squares(
+    H,
+    labels,
+    num_classes=10,
+    lambda_relative=1e-4,
+):
+    """Fit the numerically stable Ridge-LS initial head used by Binarized LS."""
+    return fit_ridge_classifier(
+        H=H,
+        labels=labels,
+        num_classes=num_classes,
+        lambda_relative=lambda_relative,
+    )
+
+
 # ============================================================
-# EVALUATE REAL-VALUED LS HEAD
+# EVALUATE REAL-VALUED RIDGE LS HEAD
 # ============================================================
 
 def evaluate_ls_head(
@@ -265,7 +281,7 @@ def evaluate_ls_head(
     correct = 0
     total = 0
 
-    classifier = classifier.to(device)
+    classifier = classifier.to(device=device, dtype=torch.float32)
 
     with torch.no_grad():
 
@@ -342,9 +358,12 @@ def binarize_classifier(
     # First 128 rows = weights
     # Last row = bias
 
+    # Binary head arithmetic is float32; the stable Ridge-LS solve itself was
+    # performed in CPU float64 before this sign/scale conversion.
+    classifier = classifier.detach().to(device='cpu', dtype=torch.float32)
     real_weights = classifier[:-1, :]
 
-    real_bias = classifier[-1, :]
+    real_bias = classifier[-1, :].clone()
 
     # --------------------------------------------------------
     # Binary weights
