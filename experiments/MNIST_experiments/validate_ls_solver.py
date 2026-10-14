@@ -84,7 +84,7 @@ def fit_legacy_default(H: torch.Tensor, y: torch.Tensor):
 def append_rows(path: Path, rows: list[dict]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     fields = [
-        "seed", "device", "torch_version", "epochs", "backbone_train_samples",
+        "seed", "device", "torch_version", "epochs", "split_seed", "backbone_train_samples",
         "validation_samples", "head_fit_samples", "candidate", "lambda_relative", "reported_rank",
         "validation_accuracy", "test_accuracy", "role", "error",
         "fit_seconds", "native_bnn_dfa_test_accuracy", "dfa_train_seconds",
@@ -108,7 +108,7 @@ def run_seed(seed: int, args) -> list[dict]:
     if labels_all is None:
         raise RuntimeError("MNIST training dataset does not expose .targets for stratified split")
 
-    fit_idx, val_idx = stratified_split(labels_all, args.validation_fraction, seed)
+    fit_idx, val_idx = stratified_split(labels_all, args.validation_fraction, args.split_seed)
     train_loader = DataLoader(
         Subset(train_dataset, fit_idx.tolist()), batch_size=64, shuffle=True
     )
@@ -157,7 +157,7 @@ def run_seed(seed: int, args) -> list[dict]:
         legacy_val = accuracy_from_scores(predict_scores(H_val, legacy_fit), y_val)
         candidates.append({
             "seed": seed, "device": str(device), "torch_version": torch.__version__,
-            "epochs": args.epochs, "backbone_train_samples": len(y_train),
+            "epochs": args.epochs, "split_seed": args.split_seed, "backbone_train_samples": len(y_train),
             "validation_samples": len(y_val), "candidate": "legacy_float32_default",
             "lambda_relative": "", "reported_rank": legacy_rank,
             "validation_accuracy": legacy_val, "test_accuracy": "",
@@ -170,7 +170,7 @@ def run_seed(seed: int, args) -> list[dict]:
     except Exception as exc:
         candidates.append({
             "seed": seed, "device": str(device), "torch_version": torch.__version__,
-            "epochs": args.epochs, "backbone_train_samples": len(y_train),
+            "epochs": args.epochs, "split_seed": args.split_seed, "backbone_train_samples": len(y_train),
             "validation_samples": len(y_val), "candidate": "legacy_float32_default",
             "lambda_relative": "", "reported_rank": "", "validation_accuracy": "",
             "test_accuracy": "", "role": "baseline_only",
@@ -186,7 +186,7 @@ def run_seed(seed: int, args) -> list[dict]:
         stable_scores["svd_gelsd_rcond_1e-6"] = val_acc
         candidates.append({
             "seed": seed, "device": str(device), "torch_version": torch.__version__,
-            "epochs": args.epochs, "backbone_train_samples": len(y_train),
+            "epochs": args.epochs, "split_seed": args.split_seed, "backbone_train_samples": len(y_train),
             "validation_samples": len(y_val), "candidate": "svd_gelsd_rcond_1e-6",
             "lambda_relative": 0.0, "reported_rank": "",
             "validation_accuracy": val_acc, "test_accuracy": "",
@@ -197,7 +197,7 @@ def run_seed(seed: int, args) -> list[dict]:
     except Exception as exc:
         candidates.append({
             "seed": seed, "device": str(device), "torch_version": torch.__version__,
-            "epochs": args.epochs, "backbone_train_samples": len(y_train),
+            "epochs": args.epochs, "split_seed": args.split_seed, "backbone_train_samples": len(y_train),
             "validation_samples": len(y_val), "candidate": "svd_gelsd_rcond_1e-6",
             "lambda_relative": 0.0, "reported_rank": "", "validation_accuracy": "",
             "test_accuracy": "", "role": "eligible_for_selection",
@@ -213,7 +213,7 @@ def run_seed(seed: int, args) -> list[dict]:
             stable_scores[name] = val_acc
             candidates.append({
                 "seed": seed, "device": str(device), "torch_version": torch.__version__,
-                "epochs": args.epochs, "backbone_train_samples": len(y_train),
+                "epochs": args.epochs, "split_seed": args.split_seed, "backbone_train_samples": len(y_train),
                 "validation_samples": len(y_val), "candidate": name,
                 "lambda_relative": lam, "reported_rank": "",
                 "validation_accuracy": val_acc, "test_accuracy": "",
@@ -224,7 +224,7 @@ def run_seed(seed: int, args) -> list[dict]:
         except Exception as exc:
             candidates.append({
                 "seed": seed, "device": str(device), "torch_version": torch.__version__,
-                "epochs": args.epochs, "backbone_train_samples": len(y_train),
+                "epochs": args.epochs, "split_seed": args.split_seed, "backbone_train_samples": len(y_train),
                 "validation_samples": len(y_val), "candidate": name,
                 "lambda_relative": lam, "reported_rank": "",
                 "validation_accuracy": "", "test_accuracy": "",
@@ -266,7 +266,7 @@ def run_seed(seed: int, args) -> list[dict]:
         legacy_test = accuracy_from_scores(predict_scores(H_test, W_legacy_all), y_test)
         final_rows.append({
             "seed": seed, "device": str(device), "torch_version": torch.__version__,
-            "epochs": args.epochs, "backbone_train_samples": len(y_train),
+            "epochs": args.epochs, "split_seed": args.split_seed, "backbone_train_samples": len(y_train),
             "validation_samples": len(y_val), "head_fit_samples": len(y_all),
             "candidate": "legacy_float32_default", "lambda_relative": "",
             "reported_rank": legacy_rank_all, "validation_accuracy": legacy_val,
@@ -282,7 +282,7 @@ def run_seed(seed: int, args) -> list[dict]:
     selected_test = accuracy_from_scores(predict_scores(H_test, W_selected), y_test)
     final_rows.append({
         "seed": seed, "device": str(device), "torch_version": torch.__version__,
-        "epochs": args.epochs, "backbone_train_samples": len(y_train),
+        "epochs": args.epochs, "split_seed": args.split_seed, "backbone_train_samples": len(y_train),
         "validation_samples": len(y_val), "head_fit_samples": len(y_all),
         "candidate": f"selected_stable:{selected_name}",
         "lambda_relative": selected_lambda, "reported_rank": "",
@@ -301,6 +301,8 @@ def main():
     parser.add_argument("--seeds", nargs="+", type=int, default=[314159])
     parser.add_argument("--epochs", type=int, default=16)
     parser.add_argument("--validation-fraction", type=float, default=0.2)
+    parser.add_argument("--split-seed", type=int, default=4242,
+                        help="Fixed stratified data-split seed, independent of model seed")
     args = parser.parse_args()
     if not 0.05 <= args.validation_fraction <= 0.4:
         parser.error("--validation-fraction must be between 0.05 and 0.4")
