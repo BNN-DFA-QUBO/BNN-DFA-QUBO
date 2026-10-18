@@ -40,32 +40,32 @@ CONTROLLED_METHOD_METADATA = {
         "optimization_procedure": "numpy.linalg.lstsq, sign-binarize weights, validation-selected threshold",
     },
     "Binarized Ridge LS (refit scale+bias)": {
-        "method_variant": "ridge_ls_then_binary_weights_refit_scale_bias",
+        "method_variant": "standardized_ridge_ls_then_binary_weights_refit_scale_bias",
         "objective": "regularized squared residual error for initial weights; training-only least-squares refit after binarization",
         "target_encoding": "stroke labels {0,1}",
         "bias_treatment": "class-independent scalar scale and intercept refitted on training rows after sign binarization",
-        "optimization_procedure": "float64 augmented SVD Ridge LS; sign-binarize feature weights; training-only scale/intercept refit; validation-selected threshold",
+        "optimization_procedure": "train-only hidden standardization; float64 augmented SVD Ridge LS; sign-binarize feature weights; training-only scale/intercept refit; validation-selected threshold",
     },
     "Direct Binary": {
-        "method_variant": "class_mean_sign_direction",
+        "method_variant": "standardized_class_mean_sign_direction",
         "objective": "no loss optimization; sign of positive-minus-negative training mean",
         "target_encoding": "stroke labels {0,1} define the two class means",
         "bias_treatment": "fixed at zero",
-        "optimization_procedure": "analytic class means then validation-selected threshold",
+        "optimization_procedure": "train-only hidden standardization; analytic class means; sign of class-mean difference; validation-selected threshold",
     },
     "STE Binary": {
-        "method_variant": "ste_signed_target_mse",
-        "objective": "mean squared error on signed targets {-1,+1}",
-        "target_encoding": "stroke 0 -> -1; stroke 1 -> +1",
+        "method_variant": "ste_bce_standardized_validation_selected_initialization",
+        "objective": "binary cross entropy with logits",
+        "target_encoding": "stroke labels {0,1}",
         "bias_treatment": "learned scalar bias",
-        "optimization_procedure": "Adam with straight-through sign-binarized weights; validation-selected threshold",
+        "optimization_procedure": "train-only standardization of hidden units; three training-only initializations (Ridge direction, class-mean direction, random direction); confidence-weighted latent STE starts place low-confidence signs near zero; Adam STE with logits divided by sqrt(hidden_size); evaluate epoch-zero baseline and retain best validation checkpoint with patience-based stopping; record actual weight sign flips; select initialization/checkpoint by equal-weight validation BA/F1/PR-AUC/ROC-AUC composite; ties favor balanced accuracy; validation-selected threshold",
     },
     "QUBO Binary": {
-        "method_variant": "qubo_signed_target_squared_error",
+        "method_variant": "qubo_signed_target_squared_error_validation_scale_sweep",
         "objective": "QUBO squared error on signed targets {-1,+1}",
         "target_encoding": "stroke 0 -> -1; stroke 1 -> +1",
-        "bias_treatment": "recovered as the training residual offset",
-        "optimization_procedure": "simulated-annealing Ising search over binary weights; validation-selected threshold",
+        "bias_treatment": "recovered as the training residual offset after train-only hidden standardization",
+        "optimization_procedure": "train-only standardization; simulated annealing across configured alpha multipliers with configured sweeps per read; low-energy samples plus class-mean, Ridge, and random training-only starts refined under the training-derived Ising energy; candidate selection by equal-weight validation BA/F1/PR-AUC/ROC-AUC composite; ties favor balanced accuracy; validation-selected threshold",
     },
 }
 
@@ -160,18 +160,31 @@ def run_experiments(seeds=None, split_seed=SPLIT_SEED, balancing_method=BALANCIN
         for method_name, method_function, method_mode in methods:
 
             print()
-            print(
-                f"Running {method_name}..."
-            )
+            print(f"Running {method_name}...")
 
-            if method_mode == "seed":
-                result = method_function(representation_path, seed)
-            elif method_mode in ("legacy", "ridge"):
-                result = method_function(representation_path, ls_solver=method_mode)
-            else:
-                result = method_function(representation_path)
+            failed = False
+            try:
+                if method_mode == "seed":
+                    result = method_function(representation_path, seed)
+                elif method_mode in ("legacy", "ridge"):
+                    result = method_function(representation_path, ls_solver=method_mode)
+                else:
+                    result = method_function(representation_path)
+            except ValueError as exc:
+                # A degenerate QUBO scale is a scientific failure for this head,
+                # but should not erase successful results from the other seeds.
+                if method_name != "QUBO Binary" or "QUBO scale calibration is degenerate" not in str(exc):
+                    raise
+                result = {
+                    "method": method_name,
+                    "status": "failed",
+                    "failure_reason": str(exc),
+                }
+                failed = True
 
             result["method"] = method_name
+            result.setdefault("status", "ok")
+            result.setdefault("failure_reason", "")
             result["experiment_type"] = "controlled_end_to_end_head_comparison"
             result["seed"] = seed
             result["model_seed"] = seed
@@ -182,7 +195,7 @@ def run_experiments(seeds=None, split_seed=SPLIT_SEED, balancing_method=BALANCIN
             result["preprocessing_config_hash"] = preprocessing_metadata["preprocessing_config_hash"]
             result["dataset_sha256"] = preprocessing_metadata["dataset_sha256"]
             result["balancing_method"] = preprocessing_metadata["balancing_method"]
-            result["head_seed"] = result.get("head_seed", "")
+            result["head_seed"] = result.get("head_seed", seed if method_mode == "seed" else "")
             result.update(CONTROLLED_METHOD_METADATA[method_name])
             result["loss_configuration"] = CONTROLLED_METHOD_METADATA[method_name]["objective"]
             result["split_class_counts"] = json.dumps({
@@ -191,33 +204,17 @@ def run_experiments(seeds=None, split_seed=SPLIT_SEED, balancing_method=BALANCIN
                 "validation": preprocessing_metadata["validation_class_counts"],
                 "test": preprocessing_metadata["test_class_counts"],
             }, sort_keys=True)
-            result["representation_path"] = (
-                representation_path
-            )
+            result["representation_path"] = representation_path
 
-            all_results.append(
-                result
-            )
+            all_results.append(result)
 
-            print(
-                f"Test BA: "
-                f"{result['balanced_accuracy'] * 100:.4f}%"
-            )
-
-            print(
-                f"F1: "
-                f"{result['f1'] * 100:.4f}%"
-            )
-
-            print(
-                f"ROC-AUC: "
-                f"{result['roc_auc'] * 100:.4f}%"
-            )
-
-            print(
-                f"PR-AUC: "
-                f"{result['pr_auc'] * 100:.4f}%"
-            )
+            if failed:
+                print(f"QUBO head FAILED for seed {seed}: {result['failure_reason']}")
+            else:
+                print(f"Test BA: {result['balanced_accuracy'] * 100:.4f}%")
+                print(f"F1: {result['f1'] * 100:.4f}%")
+                print(f"ROC-AUC: {result['roc_auc'] * 100:.4f}%")
+                print(f"PR-AUC: {result['pr_auc'] * 100:.4f}%")
 
     save_results(all_results, results_path)
 
@@ -245,6 +242,8 @@ def save_results(results, results_path=None):
     fieldnames = [
         "experiment_type",
         "method",
+        "status",
+        "failure_reason",
         "method_variant",
         "seed",
         "model_seed",
@@ -275,9 +274,37 @@ def save_results(results, results_path=None):
         "actual_positive",
         "threshold",
         "validation_balanced_accuracy",
+        "validation_selection_score",
+        "validation_f1",
+        "validation_pr_auc",
+        "validation_roc_auc",
         "alpha",
+        "base_alpha",
+        "alpha_multiplier",
+        "qubo_alpha_multipliers",
+        "qubo_candidate_count",
+        "qubo_energy",
+        "qubo_candidate_source",
         "bias",
         "qubo_num_reads",
+        "qubo_num_reads_per_scale",
+        "qubo_num_sweeps",
+        "qubo_random_seed_starts",
+        "qubo_total_reads",
+        "initialization",
+        "candidate_initializations",
+        "ste_epochs",
+        "ste_epochs_run",
+        "ste_best_epoch",
+        "ste_patience",
+        "ste_validation_checkpoints",
+        "ste_weight_flips_from_init",
+        "ste_final_weight_flips_from_init",
+        "ste_latent_init",
+        "ste_learning_rate",
+        "training_loss",
+        "hidden_feature_transform",
+        "standardized_constant_units",
         "head_seed",
         "representation_path"
     ]
