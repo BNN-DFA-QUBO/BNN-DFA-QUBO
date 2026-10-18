@@ -20,7 +20,7 @@ STE_PATIENCE = 25
 STE_MIN_DELTA = 1e-4
 
 QUBO_NUM_READS = 100
-QUBO_NUM_SWEEPS = 80
+QUBO_NUM_SWEEPS = 250
 # Training-only binary seeds get QUBO-energy coordinate refinement at every alpha scale.
 QUBO_RANDOM_SEED_STARTS = 4
 # Explore binary-head coupling strengths; validation selects the QUBO candidate.
