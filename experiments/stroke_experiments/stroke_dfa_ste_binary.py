@@ -18,7 +18,7 @@ from utils.stroke_representation import load_representation
 from utils.stroke_binary_features import standardize_hidden_features
 from utils.stroke_metrics import find_best_threshold, calculate_metrics
 from utils.seed import set_seed
-from utils.stroke_config import STE_EPOCHS, STE_LEARNING_RATE
+from utils.stroke_config import STE_EPOCHS, STE_LEARNING_RATE, STE_PATIENCE, STE_MIN_DELTA
 
 
 def _binary_sign(values, fallback=None):
@@ -47,9 +47,18 @@ def _initial_signs(name, H_train, y_train, seed):
 
 
 def _fit_candidate(H_train, y_train, H_val, y_val, seed, initialization):
+    """Train an STE start, retaining its best validation checkpoint including epoch zero.
+
+    The binary initialization is itself a valid classifier. Evaluating it before
+    optimization prevents STE updates from replacing a useful sign pattern with
+    a degenerate late-epoch pattern (for example, scores that predict every case
+    positive). Checkpoint and stopping decisions use validation data only.
+    """
     set_seed(seed)
     signs = _initial_signs(initialization, H_train, y_train, seed)
-    latent_weights = (0.5 * signs + 0.01 * torch.randn_like(signs)).detach().requires_grad_(True)
+    latent_weights = (
+        0.5 * signs + 0.01 * torch.randn_like(signs)
+    ).detach().requires_grad_(True)
     bias = torch.tensor(0.0, dtype=torch.float32, requires_grad=True)
     optimizer = torch.optim.Adam(
         [latent_weights, bias],
@@ -57,8 +66,59 @@ def _fit_candidate(H_train, y_train, H_val, y_val, seed, initialization):
     )
     logit_scale = H_train.shape[1] ** 0.5
     criterion = torch.nn.BCEWithLogitsLoss()
+    best = None
+    checkpoints = 0
 
-    for _ in range(STE_EPOCHS):
+    def consider_checkpoint(epoch):
+        nonlocal best, checkpoints
+        with torch.no_grad():
+            weights = _binary_sign(latent_weights).detach().clone()
+            val_scores = (H_val @ weights) / logit_scale + bias
+        scores_numpy = val_scores.detach().cpu().numpy()
+        threshold, validation_ba = find_best_threshold(
+            y_val.numpy(), scores_numpy
+        )
+        validation_metrics = calculate_metrics(
+            y_val.numpy(), scores_numpy, threshold
+        )
+        validation_selection_score = float(np.mean([
+            validation_ba,
+            validation_metrics["f1"],
+            validation_metrics["pr_auc"],
+            validation_metrics["roc_auc"],
+        ]))
+        selection_key = (
+            validation_selection_score,
+            float(validation_ba),
+            float(validation_metrics["f1"]),
+            float(validation_metrics["pr_auc"]),
+            float(validation_metrics["roc_auc"]),
+        )
+        checkpoints += 1
+        if best is None or selection_key > best["selection_key"]:
+            best = {
+                "selection_key": selection_key,
+                "validation_selection_score": validation_selection_score,
+                "weights": weights,
+                "bias": float(bias.detach().item()),
+                "threshold": float(threshold),
+                "validation_balanced_accuracy": float(validation_ba),
+                "validation_f1": float(validation_metrics["f1"]),
+                "validation_pr_auc": float(validation_metrics["pr_auc"]),
+                "validation_roc_auc": float(validation_metrics["roc_auc"]),
+                "initialization": initialization,
+                "best_epoch": int(epoch),
+            }
+        return validation_selection_score
+
+    # Keep the initialized sign pattern as a baseline candidate. With the
+    # class-mean start, its ranking matches the Direct Binary baseline.
+    best_score_for_patience = consider_checkpoint(0)
+    last_significant_improvement = 0
+    epochs_run = 0
+    patience = max(int(STE_PATIENCE), 1)
+
+    for epoch in range(1, int(STE_EPOCHS) + 1):
         optimizer.zero_grad(set_to_none=True)
         sign_weights = _binary_sign(latent_weights)
         binary_weights = (
@@ -72,37 +132,18 @@ def _fit_candidate(H_train, y_train, H_val, y_val, seed, initialization):
             raise ValueError("STE training produced a non-finite loss")
         loss.backward()
         optimizer.step()
+        epochs_run = epoch
 
-    with torch.no_grad():
-        weights = _binary_sign(latent_weights)
-        val_scores = (H_val @ weights) / logit_scale + bias
-    threshold, validation_ba = find_best_threshold(y_val.numpy(), val_scores.numpy())
-    validation_metrics = calculate_metrics(y_val.numpy(), val_scores.numpy(), threshold)
-    validation_selection_score = float(np.mean([
-        validation_ba,
-        validation_metrics["f1"],
-        validation_metrics["pr_auc"],
-        validation_metrics["roc_auc"],
-    ]))
-    selection_key = (
-        validation_selection_score,
-        float(validation_ba),
-        float(validation_metrics["f1"]),
-        float(validation_metrics["pr_auc"]),
-        float(validation_metrics["roc_auc"]),
-    )
-    return {
-        "selection_key": selection_key,
-        "validation_selection_score": validation_selection_score,
-        "weights": weights.detach().clone(),
-        "bias": float(bias.detach().item()),
-        "threshold": float(threshold),
-        "validation_balanced_accuracy": float(validation_ba),
-        "validation_f1": float(validation_metrics["f1"]),
-        "validation_pr_auc": float(validation_metrics["pr_auc"]),
-        "validation_roc_auc": float(validation_metrics["roc_auc"]),
-        "initialization": initialization,
-    }
+        current_score = consider_checkpoint(epoch)
+        if current_score > best_score_for_patience + STE_MIN_DELTA:
+            best_score_for_patience = current_score
+            last_significant_improvement = epoch
+        if epoch - last_significant_improvement >= patience:
+            break
+
+    best["epochs_run"] = int(epochs_run)
+    best["validation_checkpoint_count"] = int(checkpoints)
+    return best
 
 
 def train_ste_binary(representation_path, seed):
@@ -151,8 +192,12 @@ def train_ste_binary(representation_path, seed):
         "initialization": best["initialization"],
         "candidate_initializations": len(candidates),
         "ste_epochs": STE_EPOCHS,
+        "ste_epochs_run": best["epochs_run"],
+        "ste_best_epoch": best["best_epoch"],
+        "ste_patience": STE_PATIENCE,
+        "ste_validation_checkpoints": best["validation_checkpoint_count"],
         "ste_learning_rate": STE_LEARNING_RATE,
-        "training_loss": "BCEWithLogitsLoss on standardized hidden features with logits divided by sqrt(hidden_size)",
+        "training_loss": "BCEWithLogitsLoss on standardized hidden features with logits divided by sqrt(hidden_size); epoch-zero baseline plus validation-selected checkpoint",
         "hidden_feature_transform": transform["transform"],
         "standardized_constant_units": transform["constant_units"],
         **metrics,
