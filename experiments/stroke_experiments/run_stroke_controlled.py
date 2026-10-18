@@ -65,7 +65,7 @@ CONTROLLED_METHOD_METADATA = {
         "objective": "QUBO squared error on signed targets {-1,+1}",
         "target_encoding": "stroke 0 -> -1; stroke 1 -> +1",
         "bias_treatment": "recovered as the training residual offset after train-only hidden standardization",
-        "optimization_procedure": "train-only standardization; simulated annealing across configured alpha multipliers; candidate selection by validation balanced accuracy, then validation PR-AUC/ROC-AUC; validation-selected threshold",
+        "optimization_procedure": "train-only standardization; simulated annealing across configured alpha multipliers; low-energy solutions plus training-energy coordinate refinement; candidate selection by validation balanced accuracy, then validation PR-AUC/ROC-AUC; validation-selected threshold",
     },
 }
 
@@ -282,6 +282,7 @@ def save_results(results, results_path=None):
         "qubo_alpha_multipliers",
         "qubo_candidate_count",
         "qubo_energy",
+        "qubo_candidate_source",
         "bias",
         "qubo_num_reads",
         "qubo_num_reads_per_scale",
