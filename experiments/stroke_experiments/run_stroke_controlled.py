@@ -58,14 +58,14 @@ CONTROLLED_METHOD_METADATA = {
         "objective": "binary cross entropy with logits",
         "target_encoding": "stroke labels {0,1}",
         "bias_treatment": "learned scalar bias",
-        "optimization_procedure": "train-only standardization of hidden units; three training-only initializations (Ridge sign, class-mean direction, random sign); Adam STE with logits divided by sqrt(hidden_size); initialization selected by validation balanced accuracy, then validation PR-AUC/ROC-AUC; validation-selected threshold",
+        "optimization_procedure": "train-only standardization of hidden units; three training-only initializations (Ridge sign, class-mean direction, random sign); Adam STE with logits divided by sqrt(hidden_size); initialization selected by equal-weight validation BA/F1/PR-AUC/ROC-AUC composite; ties favor balanced accuracy; validation-selected threshold",
     },
     "QUBO Binary": {
         "method_variant": "qubo_signed_target_squared_error_validation_scale_sweep",
         "objective": "QUBO squared error on signed targets {-1,+1}",
         "target_encoding": "stroke 0 -> -1; stroke 1 -> +1",
         "bias_treatment": "recovered as the training residual offset after train-only hidden standardization",
-        "optimization_procedure": "train-only standardization; simulated annealing across configured alpha multipliers; low-energy solutions plus training-energy coordinate refinement; candidate selection by validation balanced accuracy, then validation F1, PR-AUC, and ROC-AUC; validation-selected threshold",
+        "optimization_procedure": "train-only standardization; simulated annealing across configured alpha multipliers; low-energy solutions plus training-energy coordinate refinement; candidate selection by equal-weight validation BA/F1/PR-AUC/ROC-AUC composite; ties favor balanced accuracy; validation-selected threshold",
     },
 }
 
