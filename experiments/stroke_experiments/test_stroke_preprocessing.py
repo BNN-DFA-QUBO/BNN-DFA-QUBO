@@ -309,6 +309,18 @@ class StrokePreprocessingTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "degenerate"):
             calculate_alpha(constant_features, balanced_labels)
 
+    def test_ste_confidence_weighted_latent_start_preserves_signs_and_frees_weak_weights(self):
+        from experiments.stroke_experiments import stroke_dfa_ste_binary as ste
+
+        direction = torch.tensor([0.1, 1.0, -0.5, 0.0], dtype=torch.float32)
+        signs = torch.tensor([1.0, 1.0, -1.0, 1.0], dtype=torch.float32)
+        latent = ste._confidence_weighted_latent_start(direction, signs, seed=9)
+
+        self.assertTrue(torch.equal(torch.sign(latent), signs))
+        self.assertLess(abs(float(latent[0])), abs(float(latent[1])))
+        self.assertLess(abs(float(latent[3])), abs(float(latent[1])))
+        self.assertTrue(torch.all(latent.abs() < 0.21))
+
     def test_ste_preserves_epoch_zero_baseline_when_updates_do_not_help(self):
         from experiments.stroke_experiments import stroke_dfa_ste_binary as ste
 
