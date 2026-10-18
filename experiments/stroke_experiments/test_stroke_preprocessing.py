@@ -309,6 +309,32 @@ class StrokePreprocessingTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "degenerate"):
             calculate_alpha(constant_features, balanced_labels)
 
+    def test_ste_preserves_epoch_zero_baseline_when_updates_do_not_help(self):
+        from experiments.stroke_experiments import stroke_dfa_ste_binary as ste
+
+        torch.manual_seed(8)
+        labels = torch.tensor([0.0, 1.0] * 20)
+        train = torch.randn(40, 6)
+        train[:, 0] += labels * 0.8
+        val_labels = torch.tensor([0.0, 1.0] * 10)
+        val = torch.randn(20, 6)
+        val[:, 0] += val_labels * 0.8
+
+        # A zero learning rate forces the same binary sign pattern at every
+        # checkpoint; the initial baseline must win ties and stop by patience.
+        with patch.object(ste, "STE_EPOCHS", 10), \
+             patch.object(ste, "STE_LEARNING_RATE", 0.0), \
+             patch.object(ste, "STE_PATIENCE", 2), \
+             patch.object(ste, "STE_MIN_DELTA", 1e-4):
+            result = ste._fit_candidate(
+                train, labels, val, val_labels, seed=18, initialization="class_mean"
+            )
+
+        self.assertEqual(result["best_epoch"], 0)
+        self.assertLessEqual(result["epochs_run"], 2)
+        self.assertGreaterEqual(result["validation_checkpoint_count"], 2)
+        self.assertTrue(torch.all(torch.abs(result["weights"]) == 1))
+
     def test_all_five_classifier_heads_run_from_one_valid_representation(self):
         from experiments.stroke_experiments.stroke_real_ls import train_real_ls
         from experiments.stroke_experiments.stroke_dfa_binarized_ls import train_binarized_ls
@@ -503,7 +529,14 @@ class StrokePreprocessingTests(unittest.TestCase):
             )
             from utils.stroke_config import QUBO_ALPHA_MULTIPLIERS
             self.assertIn(qubo["alpha_multiplier"], QUBO_ALPHA_MULTIPLIERS)
-            self.assertIn(qubo["qubo_candidate_source"], {"annealing", "coordinate_refinement"})
+            source = qubo["qubo_candidate_source"]
+            self.assertTrue(
+                source in {"annealing", "coordinate_refinement", "class_mean_seed", "ridge_seed"}
+                or source.endswith("_qubo_refined")
+                or source.startswith("random_seed_")
+            )
+            self.assertGreaterEqual(qubo["qubo_num_sweeps"], 1)
+            self.assertGreaterEqual(qubo["qubo_random_seed_starts"], 0)
 
 
 if __name__ == "__main__":
