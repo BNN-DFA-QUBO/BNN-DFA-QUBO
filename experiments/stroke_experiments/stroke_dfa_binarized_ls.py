@@ -15,6 +15,7 @@ import numpy as np
 import torch
 
 from models.ls_heads import fit_ridge_regression
+from utils.stroke_binary_features import standardize_hidden_features
 from utils.stroke_representation import load_representation
 from utils.stroke_data import DATA_DIR
 from utils.stroke_metrics import find_best_threshold, calculate_metrics
@@ -80,9 +81,20 @@ def train_binarized_ls(representation_path, ls_solver="ridge", lambda_relative=1
         raise ValueError("lambda_relative must be finite and >= 0")
 
     data = load_representation(representation_path)
-    H_train = _numpy(data["H_train"])
-    H_val = _numpy(data["H_val"])
-    H_test = _numpy(data["H_test"])
+    if ls_solver == "ridge":
+        H_train_t, H_val_t, H_test_t, transform = standardize_hidden_features(
+            data["H_train"], data["H_val"], data["H_test"]
+        )
+        H_train = _numpy(H_train_t)
+        H_val = _numpy(H_val_t)
+        H_test = _numpy(H_test_t)
+    else:
+        # Preserve the original raw-representation behavior for reproducibility.
+        H_train = _numpy(data["H_train"])
+        H_val = _numpy(data["H_val"])
+        H_test = _numpy(data["H_test"])
+        transform = {"transform": "none_legacy_raw_hidden", "constant_units": ""}
+
     y_train = _numpy(data["y_train"]).reshape(-1)
     y_val = _numpy(data["y_val"]).reshape(-1)
     y_test = _numpy(data["y_test"]).reshape(-1)
@@ -99,6 +111,8 @@ def train_binarized_ls(representation_path, ls_solver="ridge", lambda_relative=1
             "lambda_relative": float(lambda_relative),
             "scale": float(scale),
             "bias_treatment": "refitted using training rows after sign binarization",
+            "hidden_feature_transform": transform["transform"],
+            "standardized_constant_units": transform["constant_units"],
         }
     else:
         binary_weights, scale, bias, real_weights = fit_legacy_binarized_ls(
@@ -112,6 +126,8 @@ def train_binarized_ls(representation_path, ls_solver="ridge", lambda_relative=1
             "lambda_relative": "",
             "scale": float(scale),
             "bias_treatment": "continuous legacy LS intercept retained",
+            "hidden_feature_transform": transform["transform"],
+            "standardized_constant_units": transform["constant_units"],
         }
 
     threshold, val_ba = find_best_threshold(y_val, val_scores)
