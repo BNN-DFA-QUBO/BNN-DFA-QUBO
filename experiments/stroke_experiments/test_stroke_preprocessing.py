@@ -247,6 +247,25 @@ class StrokePreprocessingTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "do not align"):
                 load_representation(path, expected_metadata=metadata)
 
+    def test_vectorized_threshold_search_matches_exact_reference_loop(self):
+        from sklearn.metrics import balanced_accuracy_score
+        from utils.stroke_metrics import find_best_threshold
+
+        rng = np.random.default_rng(712)
+        for _ in range(8):
+            labels = rng.integers(0, 2, size=83)
+            # Ties are deliberate: only unique score boundaries are relevant.
+            scores = rng.choice(np.array([-2.0, -0.5, -0.5, 0.0, 1.0, 1.0, 4.0]), size=83)
+            threshold, ba = find_best_threshold(labels, scores)
+            candidates = np.r_[np.unique(scores), np.nextafter(np.max(scores), np.inf)]
+            expected_threshold, expected_ba = float(candidates[0]), -1.0
+            for candidate in candidates:
+                score = balanced_accuracy_score(labels, scores >= candidate)
+                if score > expected_ba:
+                    expected_threshold, expected_ba = float(candidate), float(score)
+            self.assertEqual(threshold, expected_threshold)
+            self.assertAlmostEqual(ba, expected_ba, places=12)
+
     def test_dfa_output_gradient_matches_mean_unweighted_bce(self):
         logits = torch.tensor([-1.2, .1, 2.3], requires_grad=True)
         labels = torch.tensor([0.0, 1.0, 1.0])
