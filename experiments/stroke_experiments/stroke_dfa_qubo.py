@@ -21,6 +21,8 @@ from utils.stroke_metrics import find_best_threshold, calculate_metrics
 from utils.seed import set_seed
 from utils.stroke_config import (
     QUBO_NUM_READS,
+    QUBO_NUM_SWEEPS,
+    QUBO_RANDOM_SEED_STARTS,
     QUBO_ALPHA_MULTIPLIERS,
     QUBO_TOP_CANDIDATES_PER_SCALE,
 )
@@ -54,6 +56,13 @@ def build_ising_model(H, target, alpha):
     return h, J
 
 
+def _binary_sign(values, fallback=None):
+    signs = torch.sign(torch.as_tensor(values, dtype=torch.float32))
+    if fallback is not None:
+        signs = torch.where(signs == 0, torch.sign(fallback), signs)
+    return torch.where(signs == 0, torch.ones_like(signs), signs)
+
+
 def _ising_energy(bits, h, J):
     return float(
         sum(float(h.get(i, 0.0)) * int(bits[i]) for i in range(len(bits)))
@@ -61,7 +70,7 @@ def _ising_energy(bits, h, J):
     )
 
 
-def _refine_ising_bits(bits, h, J, max_passes=20):
+def _refine_ising_bits(bits, h, J, max_passes=50):
     """Greedy single-spin descent using only the training-derived Ising energy."""
     spins = [int(value) for value in bits]
     neighbors = [[] for _ in spins]
@@ -105,12 +114,16 @@ def sample_binary_candidates(
     seed,
     alpha_multipliers=QUBO_ALPHA_MULTIPLIERS,
     top_k=QUBO_TOP_CANDIDATES_PER_SCALE,
+    num_sweeps=QUBO_NUM_SWEEPS,
+    random_seed_starts=QUBO_RANDOM_SEED_STARTS,
 ):
     """Collect distinct low-energy weight candidates across the alpha sweep."""
     H_cpu = torch.as_tensor(H).detach().to(device="cpu", dtype=torch.float32)
     target_cpu = torch.as_tensor(target).detach().reshape(-1).to(device="cpu", dtype=torch.float32)
-    if top_k < 1 or num_reads < 1:
-        raise ValueError("top_k and num_reads must be positive")
+    if top_k < 1 or num_reads < 1 or num_sweeps < 1:
+        raise ValueError("top_k, num_reads, and num_sweeps must be positive")
+    if random_seed_starts < 0:
+        raise ValueError("random_seed_starts must be non-negative")
     if not alpha_multipliers:
         raise ValueError("At least one QUBO alpha multiplier is required")
 
@@ -118,6 +131,20 @@ def sample_binary_candidates(
     seen = set()
     sampler = neal.SimulatedAnnealingSampler()
     hidden_size = H_cpu.shape[1]
+    rng = np.random.default_rng(int(seed))
+
+    positive_mask = target_cpu > 0
+    negative_mask = target_cpu < 0
+    if not positive_mask.any() or not negative_mask.any():
+        raise ValueError("QUBO candidate search requires signed targets from both classes")
+    class_mean_direction = (
+        H_cpu[positive_mask].mean(dim=0) - H_cpu[negative_mask].mean(dim=0)
+    )
+    class_mean_seed = _binary_sign(class_mean_direction)
+    ridge_coefficients = fit_ridge_regression(
+        H_cpu, target_cpu, lambda_relative=1e-3
+    )[:-1, 0].to(dtype=torch.float32)
+    ridge_seed = _binary_sign(ridge_coefficients, class_mean_direction)
 
     for scale_index, multiplier in enumerate(alpha_multipliers):
         multiplier = float(multiplier)
@@ -129,6 +156,7 @@ def sample_binary_candidates(
             h,
             J,
             num_reads=int(num_reads),
+            num_sweeps=int(num_sweeps),
             seed=int(seed) + 104729 * scale_index,
         )
         variable_positions = {variable: i for i, variable in enumerate(response.variables)}
@@ -156,6 +184,36 @@ def sample_binary_candidates(
                     "alpha_multiplier": multiplier,
                     "energy": _ising_energy(candidate_bits, h, J),
                     "candidate_source": source,
+                })
+
+        # Seed the discrete search with directions learned from training rows,
+        # plus reproducible random binary vectors. Refine under this scale's
+        # training-derived Ising energy; validation ranks candidates afterward.
+        seeded_vectors = [
+            ("class_mean_seed", tuple(int(v) for v in class_mean_seed.tolist())),
+            ("ridge_seed", tuple(int(v) for v in ridge_seed.tolist())),
+        ]
+        for random_index in range(int(random_seed_starts)):
+            random_bits = tuple(
+                int(v) for v in rng.choice(np.array([-1, 1]), size=hidden_size)
+            )
+            seeded_vectors.append((f"random_seed_{random_index}", random_bits))
+
+        for source, seed_bits in seeded_vectors:
+            refined_bits = _refine_ising_bits(seed_bits, h, J, max_passes=50)
+            for candidate_bits, candidate_source in (
+                (seed_bits, source),
+                (refined_bits, f"{source}_qubo_refined"),
+            ):
+                if candidate_bits in seen:
+                    continue
+                seen.add(candidate_bits)
+                candidates.append({
+                    "weights": torch.tensor(candidate_bits, dtype=torch.float32),
+                    "alpha": alpha,
+                    "alpha_multiplier": multiplier,
+                    "energy": _ising_energy(candidate_bits, h, J),
+                    "candidate_source": candidate_source,
                 })
     if not candidates:
         raise RuntimeError("QUBO annealing returned no distinct binary candidates")
@@ -282,6 +340,8 @@ def train_qubo(representation_path, seed):
         "bias": float(best["bias"]),
         "qubo_num_reads": QUBO_NUM_READS,
         "qubo_num_reads_per_scale": QUBO_NUM_READS,
+        "qubo_num_sweeps": QUBO_NUM_SWEEPS,
+        "qubo_random_seed_starts": QUBO_RANDOM_SEED_STARTS,
         "qubo_total_reads": QUBO_NUM_READS * len(QUBO_ALPHA_MULTIPLIERS),
         "qubo_alpha_multipliers": list(QUBO_ALPHA_MULTIPLIERS),
         "qubo_candidate_count": len(candidates),
