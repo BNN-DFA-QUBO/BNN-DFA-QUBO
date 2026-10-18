@@ -470,10 +470,12 @@ class StrokePreprocessingTests(unittest.TestCase):
             self.assertIn(ste["initialization"], {"ridge", "class_mean", "random"})
             self.assertEqual(ste["hidden_feature_transform"], "train_fitted_hidden_mean_std")
             self.assertTrue(np.isfinite(ste["validation_f1"]))
+            self.assertTrue(np.isfinite(ste["validation_selection_score"]))
             qubo = next(item for item in head_results if item["method"] == "QUBO Binary")
             self.assertGreaterEqual(qubo["qubo_candidate_count"], 1)
             self.assertTrue(np.isfinite(qubo["base_alpha"]))
             self.assertTrue(np.isfinite(qubo["validation_f1"]))
+            self.assertTrue(np.isfinite(qubo["validation_selection_score"]))
             from utils.stroke_config import QUBO_ALPHA_MULTIPLIERS
             self.assertIn(qubo["alpha_multiplier"], QUBO_ALPHA_MULTIPLIERS)
             self.assertIn(qubo["qubo_candidate_source"], {"annealing", "coordinate_refinement"})
