@@ -97,7 +97,7 @@ def _fit_candidate(H_train, y_train, H_val, y_val, seed, initialization):
 
 
 def train_ste_binary(representation_path, seed):
-    """Train three STE starts and choose using validation BA, then PR/ROC AUC."""
+    """Train three STE starts; rank by validation BA then F1, PR-AUC, and ROC-AUC."""
     data = load_representation(representation_path)
     H_train, H_val, H_test, transform = standardize_hidden_features(
         data["H_train"], data["H_val"], data["H_test"]
