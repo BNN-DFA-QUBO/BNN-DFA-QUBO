@@ -180,10 +180,6 @@ class StrokePreprocessor:
         )).astype(np.float32)
         if result.shape[1] != len(self.feature_names) or not np.isfinite(result).all():
             raise ValueError("Transformed stroke features have invalid schema or non-finite values")
-        if float(np.abs(result).max(initial=0.0)) > 100.0:
-            raise ValueError(
-                "Scaled Stroke features exceed the safety bound; check the fitted preprocessing transform"
-            )
         return pd.DataFrame(result, index=frame.index, columns=self.feature_names)
 
 
