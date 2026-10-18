@@ -41,13 +41,13 @@ PREPROCESSING_CONFIG = {
     "numeric_imputer": {"method": "knn", "features": KNN_COLUMNS, "n_neighbors": 5, "weights": "distance"},
     "categorical_imputer": {"method": "most_frequent"},
     "power_transform": {"method": "yeo-johnson", "standardize": True,
-                        "columns": ["avg_glucose_level", "bmi", "age_glucose_interaction"]},
+                        "columns": ["age", "avg_glucose_level", "bmi", "age_glucose_interaction"]},
     "encoder": {"method": "onehot", "columns": ONE_HOT_CATEGORICAL, "handle_unknown": "ignore"},
     "binary_categorical_maps": BINARY_CATEGORICAL_MAPS,
     "cardio_comorbidity_index": "rounded hypertension + rounded heart_disease",
     "glucose_risk_tier": {"cut_points": [100, 140], "labels": [0, 1, 2], "intervals": "right-closed, matching pandas.cut defaults"},
     "metabolic_syndrome_flag": {"hypertension": 1, "avg_glucose_level_min": 140, "bmi_min": 30},
-    "feature_order_policy": "binary/clinical/raw-engineered, one-hot work/smoking, Yeo-Johnson values",
+    "feature_order_policy": "binary/clinical-derived flags, one-hot work/smoking, train-fitted standardized Yeo-Johnson age/glucose/BMI/interaction",
     "split_policy": SPLIT_POLICY,
 }
 
@@ -109,15 +109,34 @@ class StrokePreprocessor:
 
     @staticmethod
     def _power_inputs(imputed):
-        return np.column_stack((imputed["avg_glucose_level"], imputed["bmi"], imputed["age"] * imputed["avg_glucose_level"]))
+        # All continuous inputs passed to the BNN are train-fitted, standardized
+        # Yeo-Johnson transforms. In particular, never feed the raw
+        # age*glucose interaction (which can exceed 20,000) beside 0/1 flags.
+        return np.column_stack((
+            imputed["age"],
+            imputed["avg_glucose_level"],
+            imputed["bmi"],
+            imputed["age"] * imputed["avg_glucose_level"],
+        ))
 
     def _feature_names(self):
-        binary_names = ["gender", "age", "hypertension", "heart_disease", "ever_married", "Residence_type",
-                        "avg_glucose_level", "bmi", "cardio_comorbidity_index", "age_glucose_interaction",
-                        "glucose_risk_tier", "metabolic_syndrome_flag"]
-        cat_names = [name.replace("work_type_grouped_", "work_type_").replace("smoking_status_", "smoking_")
-                     for name in self.encoder.get_feature_names_out(ONE_HOT_CATEGORICAL).tolist()]
-        return binary_names + cat_names + ["avg_glucose_level_normalized", "bmi_normalized", "age_glucose_interaction_normalized"]
+        binary_names = [
+            "gender", "hypertension", "heart_disease", "ever_married",
+            "Residence_type", "cardio_comorbidity_index",
+            "glucose_risk_tier", "metabolic_syndrome_flag",
+        ]
+        cat_names = [
+            name.replace("work_type_grouped_", "work_type_")
+                .replace("smoking_status_", "smoking_")
+            for name in self.encoder.get_feature_names_out(ONE_HOT_CATEGORICAL).tolist()
+        ]
+        scaled_names = [
+            "age_normalized",
+            "avg_glucose_level_normalized",
+            "bmi_normalized",
+            "age_glucose_interaction_normalized",
+        ]
+        return binary_names + cat_names + scaled_names
 
     def transform(self, frame):
         x = self._engineer(frame)
@@ -126,34 +145,39 @@ class StrokePreprocessor:
         numeric = pd.DataFrame(self.numeric_imputer.transform(self._knn_inputs(x, binary_cats)), columns=KNN_COLUMNS, index=x.index)
         numeric["hypertension"] = numeric.hypertension.round().clip(0, 1)
         numeric["heart_disease"] = numeric.heart_disease.round().clip(0, 1)
-        a, b, interaction = self.power.transform(self._power_inputs(numeric)).T
+        age_norm, glucose_norm, bmi_norm, interaction_norm = self.power.transform(
+            self._power_inputs(numeric)
+        ).T
+
+        hypertension = numeric.hypertension.round().clip(0, 1)
+        heart_disease = numeric.heart_disease.round().clip(0, 1)
         features = pd.DataFrame({
-            "age": numeric.age, "hypertension": numeric.hypertension.round().clip(0, 1),
-            "heart_disease": numeric.heart_disease.round().clip(0, 1),
-            "cardio_comorbidity_index": numeric.hypertension.round().clip(0, 1) + numeric.heart_disease.round().clip(0, 1),
-            "glucose_risk_tier": pd.cut(numeric.avg_glucose_level, [-np.inf, 100, 140, np.inf], labels=[0, 1, 2]).astype(int),
-            "metabolic_syndrome_flag": ((numeric.hypertension >= .5) & (numeric.avg_glucose_level >= 140) & (numeric.bmi >= 30)).astype(int),
-            "avg_glucose_level_normalized": a, "bmi_normalized": b, "age_glucose_interaction_normalized": interaction,
+            "gender": binary_cats["gender"].astype(np.float32),
+            "hypertension": hypertension.astype(np.float32),
+            "heart_disease": heart_disease.astype(np.float32),
+            "ever_married": binary_cats["ever_married"].astype(np.float32),
+            "Residence_type": binary_cats["Residence_type"].astype(np.float32),
+            "cardio_comorbidity_index": hypertension + heart_disease,
+            "glucose_risk_tier": pd.cut(
+                numeric.avg_glucose_level,
+                [-np.inf, 100, 140, np.inf],
+                labels=[0, 1, 2],
+            ).astype(int),
+            "metabolic_syndrome_flag": (
+                (hypertension >= 1)
+                & (numeric.avg_glucose_level >= 140)
+                & (numeric.bmi >= 30)
+            ).astype(int),
         }, index=x.index)
-        binary = pd.DataFrame(index=frame.index)
-        for name in BINARY_CATEGORICAL_MAPS:
-            if name == "gender":
-                binary[name] = numeric.gender_encoded.round().clip(0, 1).astype(np.float32).to_numpy()
-            else:
-                binary[name] = binary_cats[name].astype(np.float32).to_numpy()
-        binary["age"] = numeric.age.to_numpy()
-        binary["hypertension"] = numeric.hypertension.round().clip(0, 1).to_numpy()
-        binary["heart_disease"] = numeric.heart_disease.round().clip(0, 1).to_numpy()
-        binary["avg_glucose_level"] = numeric.avg_glucose_level.to_numpy()
-        binary["bmi"] = numeric.bmi.to_numpy()
-        binary["cardio_comorbidity_index"] = features.cardio_comorbidity_index.to_numpy()
-        binary["age_glucose_interaction"] = (numeric.age * numeric.avg_glucose_level).to_numpy()
-        binary["glucose_risk_tier"] = features.glucose_risk_tier.to_numpy()
-        binary["metabolic_syndrome_flag"] = features.metabolic_syndrome_flag.to_numpy()
-        binary = binary[self.feature_names[:12]]
+        features = features[self.feature_names[:8]]
+
         encoded = self.encoder.transform(cats[ONE_HOT_CATEGORICAL])
-        normalized = np.column_stack((a, b, interaction)).astype(np.float32)
-        result = np.column_stack((binary.to_numpy(dtype=np.float32), encoded, normalized)).astype(np.float32)
+        normalized = np.column_stack((
+            age_norm, glucose_norm, bmi_norm, interaction_norm
+        )).astype(np.float32)
+        result = np.column_stack((
+            features.to_numpy(dtype=np.float32), encoded, normalized
+        )).astype(np.float32)
         if result.shape[1] != len(self.feature_names) or not np.isfinite(result).all():
             raise ValueError("Transformed stroke features have invalid schema or non-finite values")
         return pd.DataFrame(result, index=frame.index, columns=self.feature_names)

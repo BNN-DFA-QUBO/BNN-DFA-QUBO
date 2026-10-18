@@ -10,7 +10,7 @@ import torch.nn as nn
 import json
 import argparse
 from torch.utils.data import DataLoader, TensorDataset
-from sklearn.metrics import balanced_accuracy_score
+from sklearn.metrics import balanced_accuracy_score, roc_curve
 
 from models.stroke_bnn import StrokeBNN
 from models.stroke_dfa import StrokeDFA, StrokeDFAFunction
@@ -38,8 +38,13 @@ def get_device():
 
 
 def evaluate_validation(model, X_val, y_val, device):
-    model.eval()
+    """Score a checkpoint using validation-only best-threshold balanced accuracy.
 
+    The downstream heads select a threshold on the same validation split. Using
+    a hard-coded 0.5 cutoff here can select an inferior representation merely
+    because its scores are not calibrated to that cutoff.
+    """
+    model.eval()
     with torch.no_grad():
         logits = model(
             torch.tensor(
@@ -48,15 +53,11 @@ def evaluate_validation(model, X_val, y_val, device):
                 device=device
             )
         )
+        scores = torch.sigmoid(logits).cpu().numpy()
 
-    predictions = (
-        torch.sigmoid(logits).cpu().numpy() >= 0.5
-    ).astype(int)
-
-    return balanced_accuracy_score(
-        y_val.values,
-        predictions
-    )
+    labels = y_val.values
+    fpr, tpr, _ = roc_curve(labels, scores)
+    return float(((tpr + 1.0 - fpr) / 2.0).max())
 
 
 def train_dfa(seed, split_seed=None, balance_method=None, overwrite=False, output_dir=DATA_DIR):

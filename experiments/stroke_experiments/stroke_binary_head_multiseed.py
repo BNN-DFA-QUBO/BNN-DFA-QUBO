@@ -12,8 +12,6 @@ import numpy as np
 import pandas as pd
 import torch
 import torch.nn as nn
-import neal
-
 from sklearn.metrics import (
     balanced_accuracy_score,
     precision_score,
@@ -24,6 +22,7 @@ from sklearn.metrics import (
     confusion_matrix,
 )
 from utils.stroke_representation import load_representation
+from utils.stroke_binary_features import standardize_hidden_features
 from utils.stroke_data import DATA_DIR
 from utils.stroke_metrics import find_best_threshold as shared_find_best_threshold
 
@@ -41,24 +40,24 @@ MULTISEED_METHOD_METADATA = {
         "objective": "binary_cross_entropy_with_logits",
         "target_encoding": "stroke labels {0,1}",
         "bias_treatment": "fixed at zero",
-        "optimization_procedure": "coordinate-wise sign flips from all-positive weights, greedy BCE improvement, at most 20 passes; validation-selected threshold",
+        "optimization_procedure": "train-only hidden standardization; coordinate-wise sign flips from all-positive weights, greedy BCE improvement, at most 20 passes; validation-selected threshold",
         "loss_configuration": "unweighted BCEWithLogitsLoss-style objective on fixed-representation training rows",
     },
     "STE Binary": {
-        "method_variant": "ste_binary_bce",
-        "objective": "mean binary cross entropy with logits",
+        "method_variant": "ste_bce_standardized_validation_selected_initialization_fixed_representation",
+        "objective": "binary cross entropy with logits",
         "target_encoding": "stroke labels {0,1}",
         "bias_treatment": "learned scalar bias",
-        "optimization_procedure": "Adam (lr=0.01) for 200 epochs with straight-through sign-binarized weights; validation-selected threshold",
-        "loss_configuration": "BCEWithLogitsLoss(reduction='mean', pos_weight=None) on fixed-representation training rows",
+        "optimization_procedure": "shared controlled STE head; train-only hidden standardization; three initializations selected by equal-weight validation BA/F1/PR-AUC/ROC-AUC composite",
+        "loss_configuration": "BCEWithLogitsLoss on train-standardized fixed-representation features; logits divided by sqrt(hidden_size)",
     },
     "QUBO Binary": {
-        "method_variant": "qubo_signed_target_squared_error",
+        "method_variant": "qubo_signed_target_squared_error_alpha_sweep_fixed_representation",
         "objective": "QUBO squared error on signed targets {-1,+1}",
         "target_encoding": "stroke 0 -> -1; stroke 1 -> +1",
-        "bias_treatment": "recovered as the training residual offset",
-        "optimization_procedure": "simulated-annealing Ising search over binary weights; validation-selected threshold",
-        "loss_configuration": "QUBO squared-error objective on fixed-representation training rows",
+        "bias_treatment": "recovered as the training residual offset after train-only hidden standardization",
+        "optimization_procedure": "shared controlled QUBO head; alpha-multiplier sweep, low-energy candidates selected by equal-weight validation BA/F1/PR-AUC/ROC-AUC composite",
+        "loss_configuration": "QUBO squared-error objective on train-standardized fixed-representation features",
     },
 }
 
@@ -75,9 +74,11 @@ def set_seed(seed):
 def load_data(representation_path):
     representation = load_representation(representation_path)
 
-    H_train = representation["H_train"].float()
-    H_val = representation["H_val"].float()
-    H_test = representation["H_test"].float()
+    H_train, H_val, H_test, transform = standardize_hidden_features(
+        representation["H_train"], representation["H_val"], representation["H_test"]
+    )
+    representation["head_hidden_feature_transform"] = transform["transform"]
+    representation["head_standardized_constant_units"] = transform["constant_units"]
 
     # Labels are stored with the representations so a separately regenerated split
     # can never silently misalign examples and learned features.
@@ -204,240 +205,8 @@ def direct_binary(
     return weights
 
 
-# ============================================================
-# STE BINARY
-# ============================================================
-
-class STEBinaryHead(nn.Module):
-
-    def __init__(self, input_size):
-
-        super().__init__()
-
-        self.weight = nn.Parameter(
-            torch.randn(input_size) * 0.01
-        )
-
-        self.bias = nn.Parameter(
-            torch.tensor(0.0)
-        )
-
-    def forward(self, x):
-
-        binary_weight = self.weight.sign()
-
-        binary_weight = (
-            binary_weight.detach()
-            - self.weight.detach()
-            + self.weight
-        )
-
-        return (
-            x @ binary_weight
-            + self.bias
-        )
-
-
-def ste_binary(
-    H,
-    labels,
-    seed
-):
-    set_seed(seed)
-
-    head = STEBinaryHead(
-        H.shape[1]
-    )
-
-    optimizer = torch.optim.Adam(
-        head.parameters(),
-        lr=0.01
-    )
-
-    criterion = nn.BCEWithLogitsLoss()
-
-    for _ in range(STE_EPOCHS):
-
-        optimizer.zero_grad()
-
-        logits = head(H)
-
-        loss = criterion(
-            logits,
-            labels
-        )
-
-        loss.backward()
-
-        optimizer.step()
-
-    with torch.no_grad():
-
-        weights = head.weight.sign().detach()
-        bias = head.bias.detach().item()
-
-    return weights, bias
-
-
-# ============================================================
-# QUBO
-# ============================================================
-
-def calculate_alpha(H, labels):
-
-    H_aug = torch.cat(
-        [
-            H,
-            torch.ones(
-                H.shape[0],
-                1
-            )
-        ],
-        dim=1
-    )
-
-    Y = torch.nn.functional.one_hot(
-        labels.long(),
-        num_classes=2
-    ).float()
-
-    W_ls = torch.linalg.lstsq(
-        H_aug,
-        Y
-    ).solution
-
-    W_positive = W_ls[
-        :H.shape[1],
-        1
-    ]
-
-    return (
-        torch.linalg.vector_norm(
-            W_positive
-        )
-        / (H.shape[1] ** 0.5)
-    ).item()
-
-
-def build_ising_model(
-    H,
-    target,
-    alpha
-):
-
-    Hc = (
-        H
-        - H.mean(
-            dim=0,
-            keepdim=True
-        )
-    )
-
-    yc = (
-        target
-        - target.mean()
-    )
-
-    gram = Hc.T @ Hc
-
-    quadratic = (
-        alpha ** 2
-        * gram
-    )
-
-    linear = (
-        -2.0
-        * alpha
-        * (Hc.T @ yc)
-    )
-
-    hidden_size = H.shape[1]
-
-    h = {}
-
-    J = {}
-
-    for i in range(hidden_size):
-
-        h[i] = float(
-            linear[i].item()
-        )
-
-    for i in range(hidden_size):
-
-        for j in range(i + 1, hidden_size):
-
-            coefficient = (
-                2.0
-                * quadratic[i, j]
-            ).item()
-
-            if abs(coefficient) > 1e-12:
-
-                J[(i, j)] = float(
-                    coefficient
-                )
-
-    return h, J
-
-
-def qubo_binary(
-    H,
-    labels,
-    seed
-):
-    set_seed(seed)
-
-    target = (
-        labels * 2.0
-        - 1.0
-    )
-
-    alpha = calculate_alpha(
-        H,
-        labels
-    )
-
-    h, J = build_ising_model(
-        H,
-        target,
-        alpha
-    )
-
-    sampler = (
-        neal.SimulatedAnnealingSampler()
-    )
-
-    response = sampler.sample_ising(
-        h,
-        J,
-        num_reads=NUM_READS,
-        seed=seed
-    )
-
-    sample = response.first.sample
-
-    weights = torch.tensor(
-        [
-            1.0
-            if sample[i] == 1
-            else -1.0
-            for i in range(H.shape[1])
-        ],
-        dtype=torch.float32
-    )
-
-    bias = (
-        target.mean()
-        - alpha
-        * (
-            H.mean(dim=0)
-            @ weights
-        )
-    ).item()
-
-    return weights, alpha, bias
-
+# STE and QUBO are delegated to the shared controlled implementations inside
+# main(), so the diagnostic CLI cannot silently use the older unstable copies.
 
 # ============================================================
 # MAIN
@@ -522,6 +291,8 @@ def main(representation_path=DATA_DIR / "stroke_dfa_representation_seed_42.pt", 
                 "method": "Direct Binary",
                 **MULTISEED_METHOD_METADATA["Direct Binary"],
                 "bias": 0.0,
+                "hidden_feature_transform": representation["head_hidden_feature_transform"],
+                "standardized_constant_units": representation["head_standardized_constant_units"],
                 **metrics
             }
         )
@@ -532,41 +303,15 @@ def main(representation_path=DATA_DIR / "stroke_dfa_representation_seed_42.pt", 
         )
 
         # ----------------------------------------------------
-        # STE Binary
+        # STE Binary (shared stable implementation)
         # ----------------------------------------------------
 
-        weights, bias = ste_binary(
-            H_train,
-            y_train,
-            seed
+        from experiments.stroke_experiments.stroke_dfa_ste_binary import train_ste_binary
+        ste_result = train_ste_binary(representation_path, seed)
+        ste_metric_fields = (
+            "balanced_accuracy", "precision", "recall", "f1", "roc_auc", "pr_auc",
+            "tn", "fp", "fn", "tp", "predicted_positive", "actual_positive", "threshold",
         )
-
-        train_scores = (
-            H_train @ weights
-            + bias
-        )
-
-        val_scores = (
-            H_val @ weights
-            + bias
-        )
-
-        test_scores = (
-            H_test @ weights
-            + bias
-        )
-
-        threshold = find_best_threshold(
-            y_val,
-            val_scores
-        )
-
-        metrics = evaluate(
-            y_test,
-            test_scores,
-            threshold
-        )
-
         results.append(
             {
                 "seed": seed,
@@ -587,55 +332,36 @@ def main(representation_path=DATA_DIR / "stroke_dfa_representation_seed_42.pt", 
                 "test_class_counts": json.dumps(provenance["test_class_counts"], sort_keys=True),
                 "method": "STE Binary",
                 **MULTISEED_METHOD_METADATA["STE Binary"],
-                "bias": float(bias),
-                **metrics
+                "bias": ste_result["bias"],
+                "initialization": ste_result["initialization"],
+                "candidate_initializations": ste_result["candidate_initializations"],
+                "validation_balanced_accuracy": ste_result["validation_balanced_accuracy"],
+                "validation_selection_score": ste_result["validation_selection_score"],
+                "validation_f1": ste_result["validation_f1"],
+                "validation_pr_auc": ste_result["validation_pr_auc"],
+                "validation_roc_auc": ste_result["validation_roc_auc"],
+                "hidden_feature_transform": ste_result["hidden_feature_transform"],
+                "standardized_constant_units": ste_result["standardized_constant_units"],
+                "ste_epochs": ste_result["ste_epochs"],
+                "ste_learning_rate": ste_result["ste_learning_rate"],
+                **{key: ste_result[key] for key in ste_metric_fields},
             }
         )
-
         print(
-            f"STE Binary: "
-            f"BA={metrics['balanced_accuracy'] * 100:.4f}%"
+            f"STE Binary: BA={ste_result['balanced_accuracy'] * 100:.4f}% "
+            f"(validation init={ste_result['initialization']})"
         )
 
         # ----------------------------------------------------
-        # QUBO Binary
+        # QUBO Binary (shared scale-search implementation)
         # ----------------------------------------------------
 
-        weights, alpha, bias = qubo_binary(
-            H_train,
-            y_train,
-            seed
+        from experiments.stroke_experiments.stroke_dfa_qubo import train_qubo
+        qubo_result = train_qubo(representation_path, seed)
+        qubo_metric_fields = (
+            "balanced_accuracy", "precision", "recall", "f1", "roc_auc", "pr_auc",
+            "tn", "fp", "fn", "tp", "predicted_positive", "actual_positive", "threshold",
         )
-
-        train_scores = (
-            alpha
-            * (H_train @ weights)
-            + bias
-        )
-
-        val_scores = (
-            alpha
-            * (H_val @ weights)
-            + bias
-        )
-
-        test_scores = (
-            alpha
-            * (H_test @ weights)
-            + bias
-        )
-
-        threshold = find_best_threshold(
-            y_val,
-            val_scores
-        )
-
-        metrics = evaluate(
-            y_test,
-            test_scores,
-            threshold
-        )
-
         results.append(
             {
                 "seed": seed,
@@ -656,15 +382,30 @@ def main(representation_path=DATA_DIR / "stroke_dfa_representation_seed_42.pt", 
                 "test_class_counts": json.dumps(provenance["test_class_counts"], sort_keys=True),
                 "method": "QUBO Binary",
                 **MULTISEED_METHOD_METADATA["QUBO Binary"],
-                "alpha": alpha,
-                "bias": float(bias),
-                **metrics
+                "alpha": qubo_result["alpha"],
+                "base_alpha": qubo_result["base_alpha"],
+                "alpha_multiplier": qubo_result["alpha_multiplier"],
+                "qubo_num_reads_per_scale": qubo_result["qubo_num_reads_per_scale"],
+                "qubo_total_reads": qubo_result["qubo_total_reads"],
+                "qubo_candidate_count": qubo_result["qubo_candidate_count"],
+                "qubo_energy": qubo_result["qubo_energy"],
+                "qubo_candidate_source": qubo_result["qubo_candidate_source"],
+                "qubo_alpha_multipliers": json.dumps(qubo_result["qubo_alpha_multipliers"]),
+                "bias": qubo_result["bias"],
+                "validation_balanced_accuracy": qubo_result["validation_balanced_accuracy"],
+                "validation_selection_score": qubo_result["validation_selection_score"],
+                "validation_f1": qubo_result["validation_f1"],
+                "validation_pr_auc": qubo_result["validation_pr_auc"],
+                "validation_roc_auc": qubo_result["validation_roc_auc"],
+                "hidden_feature_transform": qubo_result["hidden_feature_transform"],
+                "standardized_constant_units": qubo_result["standardized_constant_units"],
+                **{key: qubo_result[key] for key in qubo_metric_fields},
             }
         )
-
         print(
-            f"QUBO Binary: "
-            f"BA={metrics['balanced_accuracy'] * 100:.4f}%"
+            f"QUBO Binary: BA={qubo_result['balanced_accuracy'] * 100:.4f}% "
+            f"(alpha multiplier={qubo_result['alpha_multiplier']}, "
+            f"candidates={qubo_result['qubo_candidate_count']})"
         )
 
     # ========================================================

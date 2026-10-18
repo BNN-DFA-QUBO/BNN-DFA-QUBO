@@ -144,6 +144,8 @@ python -m experiments.stroke_experiments.process_stroke --seed 42 --balancing ra
 
 The preprocessing flow creates stratified 70/15/15 train/validation/test splits, fits learned preprocessing on the training split only, and applies optional balancing to training rows only. Validation and test remain imbalanced. The saved metadata records the raw-data hash, split seed, feature names/order, preprocessing configuration, class counts, and other provenance information.
 
+The current Stroke preprocessing version is `finalboss-stroke-v3-scaled-inputs`. It keeps age, glucose, BMI, and the age–glucose interaction as train-fitted standardized Yeo–Johnson features; it does not feed their large raw-valued counterparts directly to the BNN. This keeps input magnitudes more comparable and prevents the unscaled interaction from dominating the first binary layer. The derived clinical flags and categorical encodings are preserved. Any representation or preprocessing artifacts from an older version must be regenerated before running the controlled comparison.
+
 The standard paths are controlled by these environment variables:
 
 - `STROKE_DATA_DIR`: local directory for preprocessing artifacts and representations; defaults to `data/stroke`.
@@ -154,21 +156,27 @@ The standard paths are controlled by these environment variables:
 ### Run the complete controlled comparison
 
 ```powershell
-python -m experiments.stroke_experiments.run_stroke_controlled --split-seed 42 --seeds 42 123 2024 7 99 --balancing random_oversample
+python -m experiments.stroke_experiments.run_stroke_controlled --split-seed 42 --seeds 42 123 2024 7 99 --balancing random_oversample --ls-solver both
 ```
 
-Each model seed trains a DFA representation; all classifier heads for that seed use the same saved representation. Metrics include balanced accuracy, precision, recall, F1, ROC-AUC, PR-AUC, and confusion-matrix counts. The output records the representation seed, split seed, data/preprocessing provenance, target encoding, objective, and bias treatment.
+Each model seed trains a DFA representation; all classifier heads for that seed use the same saved representation. Metrics include balanced accuracy, precision, recall, F1, ROC-AUC, PR-AUC, and confusion-matrix counts. The output records the representation seed, split seed, data/preprocessing provenance, target encoding, objective, and bias treatment. With `--ls-solver both`, the legacy and Ridge-derived binarized LS heads are evaluated on the same representation per seed. The CSV includes `status` and `failure_reason` columns so a detected degenerate QUBO head is recorded explicitly and later seeds can still run.
 
 **Rerun protection:** the controlled runner refuses to replace existing representation, model, or result files unless `--overwrite` is supplied. Only use `--overwrite` when you intend to replace those artifacts. For isolated runs, pass a new nested `--output-dir`, for example `data/stroke_runs/run_20261014/stroke`; the runner stores its CSV beside that output directory.
 
 ### Stroke LS variants
 
-The existing Stroke Real-LS path is an unregularized NumPy least-squares fit with `{0,1}` targets. The candidate Ridge LS path uses the shared float64 augmented SVD solver with regularization. The Stroke Ridge-Binarized-LS candidate also refits the scale and intercept after binarization. These changes are not assumed to be improvements merely because Ridge LS helped in an MNIST experiment.
+The QUBO head calibrates its initial score scale using the shared float64 SVD Ridge solver on the same signed `{-1,+1}` target encoding used by its QUBO objective. It fits the hidden-feature standardizer on training representations only and searches a configured alpha-multiplier grid using simulated annealing (recorded reads and sweeps per scale). In addition to low-energy annealer samples and their coordinate refinements, each scale evaluates class-mean, Ridge-derived, and reproducible random binary starts refined using the training-derived Ising energy. Candidate selection uses an equal-weight validation composite of balanced accuracy, F1, PR-AUC, and ROC-AUC; composite ties favor balanced accuracy. The test split is not used for calibration, candidate construction, ranking, or threshold selection. The result CSV records alpha settings, candidate source/count, energy, reads, sweeps, random-start budget, and validation metrics. Degenerate representations raise a clear error instead of silently returning an all-positive classifier.
+
+The stable binary-weight heads (Direct Binary, Ridge-derived Binarized LS, STE, and QUBO) use the same train-fitted hidden-feature standardization convention. Legacy Binarized LS intentionally retains the raw representation for reproducibility. The Stroke STE head divides its BCE-with-logits scores by `sqrt(hidden_size)` during optimization to limit activation-scale-driven gradients. It tests Ridge, class-mean, and random training-derived directions, then uses confidence-weighted latent initial magnitudes: weaker direction components start closer to zero so straight-through gradients can flip their binary signs, while more confident components start farther from the sign boundary. It evaluates each initial binary vector as an epoch-zero baseline, retains the best validation checkpoint across all subsequent sign patterns, and uses patience-based stopping. The best candidate is selected by the equal-weight validation composite of balanced accuracy, F1, PR-AUC, and ROC-AUC (ties favor balanced accuracy). The result CSV records the selected epoch and how many binary signs changed from the start, allowing us to verify that STE actually optimized rather than merely falling back to the initial classifier.
+
+The existing Stroke Real-LS path is an unregularized NumPy least-squares fit with `{0,1}` targets. The Stroke Binarized Ridge-LS path uses the shared float64 augmented SVD solver, signs the feature weights, and refits the scale and intercept using training representations only.
+
+**Result-version note:** earlier five-seed comparisons were generated with preprocessing v2 and the old 23-feature input schema. Preprocessing v3 changes the input schema to 20 features and rescales continuous inputs, so those older metrics and head rankings must not be presented as the v3 results. Regenerate the complete controlled run and its summary under v3 before updating the paper or drawing conclusions about the current models.
 
 For a saved representation:
 
 ```powershell
-# Existing legacy binarized LS implementation (default pending corrected validation)
+# Existing legacy binarized LS implementation
 python -m experiments.stroke_experiments.stroke_dfa_binarized_ls --representation data/stroke/stroke_dfa_representation_seed_42.pt --ls-solver legacy
 
 # Candidate stable Ridge-LS weights and refitted scale/bias
@@ -178,11 +186,11 @@ python -m experiments.stroke_experiments.stroke_dfa_binarized_ls --representatio
 The controlled runner supports the same choice:
 
 ```powershell
-# Default: preserve historical Stroke result method labels and behavior
-python -m experiments.stroke_experiments.run_stroke_controlled --split-seed 42 --seeds 42 123 2024 7 99 --ls-solver legacy
-
-# Explicitly run the candidate Ridge-binarized head
+# Default: validated Ridge-derived binary LS head
 python -m experiments.stroke_experiments.run_stroke_controlled --split-seed 42 --seeds 42 123 2024 7 99 --ls-solver ridge
+
+# Reproduce the previous binarized-LS implementation
+python -m experiments.stroke_experiments.run_stroke_controlled --split-seed 42 --seeds 42 123 2024 7 99 --ls-solver legacy
 ```
 
 ### Paired LS-head validation
@@ -264,6 +272,4 @@ The `data/` directory is Git-ignored to avoid committing raw datasets, large rep
 
 ## 7. Current LS validation status on the feature branch
 
-The stable MNIST Ridge-LS path has been evaluated across multiple seeds. The paired Stroke diagnostic is now being tightened to select thresholds at score boundaries rather than on a fixed linear grid. Until that corrected comparison has been rerun and reviewed, the Stroke controlled runner keeps the legacy Binarized-LS implementation as its default and exposes the Ridge-derived variant through `--ls-solver ridge`. The continuous Stroke Real-LS default remains unchanged.
-
-Do not merge this feature branch into `main` until the corrected Stroke validation, synthetic tests, existing Stroke preprocessing tests, and README commands have been run locally and their results reviewed.
+The stable MNIST Ridge-LS path has been evaluated across multiple seeds. Historical Stroke v2 results (the old 23-feature input schema) showed Ridge-derived Binarized LS improving mean test balanced accuracy (71.59% vs. 63.35%) and mean ROC-AUC (78.26% vs. 55.65%) over legacy Binarized LS. Those numbers are **historical v2 results only**: v3 now standardizes the hidden inputs for the stable binary heads and adds STE initialization / QUBO scale candidate selection, so the v2 comparison is not evidence for the current ranking. Rerun the full controlled comparison under the exact v3 code before making current performance claims. The controlled Stroke runner defaults to `--ls-solver ridge`; use `--ls-solver legacy` to reproduce the legacy binarized-LS implementation or `--ls-solver both` to record both heads on each representation. The continuous Stroke Real-LS default remains unchanged.

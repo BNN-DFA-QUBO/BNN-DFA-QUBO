@@ -19,6 +19,12 @@ from experiments.stroke_experiments.stroke_dfa_least_squares import fit_signed_l
 
 
 class StrokePreprocessingTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        # The test fixtures use temporary folders inside data/, which may have
+        # been removed during a clean-from-scratch pipeline run.
+        Path("data").mkdir(parents=True, exist_ok=True)
+
     @staticmethod
     def sample():
         n = 400
@@ -63,14 +69,24 @@ class StrokePreprocessingTests(unittest.TestCase):
         df = self.sample().iloc[:320].copy()
         pre = StrokePreprocessor().fit(df)
         transformed = pre.transform(df.iloc[[1, 2, 3]])
-        self.assertEqual(pre.feature_names[:12], ["gender", "age", "hypertension", "heart_disease", "ever_married", "Residence_type",
-                                                   "avg_glucose_level", "bmi", "cardio_comorbidity_index", "age_glucose_interaction",
-                                                   "glucose_risk_tier", "metabolic_syndrome_flag"])
-        self.assertEqual(len(pre.feature_names), 23)
+        self.assertEqual(pre.feature_names[:8], [
+            "gender", "hypertension", "heart_disease", "ever_married",
+            "Residence_type", "cardio_comorbidity_index",
+            "glucose_risk_tier", "metabolic_syndrome_flag",
+        ])
+        self.assertEqual(len(pre.feature_names), 20)
         self.assertIn("work_type_Govt_job", transformed.columns)
         self.assertIn("smoking_never smoked", transformed.columns)
-        row = df.iloc[1]
-        self.assertAlmostEqual(transformed.iloc[0]["age_glucose_interaction"], row.age * row.avg_glucose_level, delta=1e-5)
+        self.assertNotIn("age_glucose_interaction", transformed.columns)
+        self.assertNotIn("age", transformed.columns)
+        scaled_columns = [
+            "age_normalized", "avg_glucose_level_normalized",
+            "bmi_normalized", "age_glucose_interaction_normalized",
+        ]
+        self.assertTrue(set(scaled_columns).issubset(transformed.columns))
+        scaled_values = transformed[scaled_columns].to_numpy()
+        self.assertTrue(np.isfinite(scaled_values).all())
+        self.assertLess(float(np.abs(scaled_values).max()), 10.0)
         self.assertEqual(transformed.iloc[0]["glucose_risk_tier"], 0)
         child = df.iloc[[2]].copy()
         never = df.iloc[[0]].copy()
@@ -105,6 +121,28 @@ class StrokePreprocessingTests(unittest.TestCase):
         np.testing.assert_array_equal(lambdas, pre.power.lambdas_)
         self.assertNotIn("future work category", pre.encoder.categories_[0])
         self.assertNotIn("future smoking category", pre.encoder.categories_[1])
+
+    def test_binary_hidden_standardization_uses_training_statistics_only(self):
+        from utils.stroke_binary_features import standardize_hidden_features
+
+        train = torch.tensor([[1.0, 5.0, 2.0], [3.0, 5.0, 4.0], [5.0, 5.0, 6.0]])
+        validation = torch.tensor([[100.0, 25.0, 10.0]])
+        test = torch.tensor([[-100.0, -15.0, 0.0]])
+        train_scaled, val_scaled, test_scaled, metadata = standardize_hidden_features(
+            train, validation, test
+        )
+        torch.testing.assert_close(train_scaled.mean(0), torch.zeros(3), atol=1e-6, rtol=0)
+        torch.testing.assert_close(
+            train_scaled.std(0, unbiased=False),
+            torch.tensor([1.0, 0.0, 1.0]),
+            atol=1e-6,
+            rtol=0,
+        )
+        # Validation/test do not refit the scaler; their out-of-range values stay out-of-range.
+        self.assertGreater(float(val_scaled[0, 0]), 10.0)
+        self.assertLess(float(test_scaled[0, 0]), -10.0)
+        self.assertEqual(metadata["constant_units"], 1)
+        self.assertEqual(metadata["transform"], "train_fitted_hidden_mean_std")
 
     def test_balance_only_train_counts_provenance_and_reproducibility(self):
         with tempfile.TemporaryDirectory(dir=Path("data")) as tmp:
@@ -209,6 +247,25 @@ class StrokePreprocessingTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "do not align"):
                 load_representation(path, expected_metadata=metadata)
 
+    def test_vectorized_threshold_search_matches_exact_reference_loop(self):
+        from sklearn.metrics import balanced_accuracy_score
+        from utils.stroke_metrics import find_best_threshold
+
+        rng = np.random.default_rng(712)
+        for _ in range(8):
+            labels = rng.integers(0, 2, size=83)
+            # Ties are deliberate: only unique score boundaries are relevant.
+            scores = rng.choice(np.array([-2.0, -0.5, -0.5, 0.0, 1.0, 1.0, 4.0]), size=83)
+            threshold, ba = find_best_threshold(labels, scores)
+            candidates = np.r_[np.unique(scores), np.nextafter(np.max(scores), np.inf)]
+            expected_threshold, expected_ba = float(candidates[0]), -1.0
+            for candidate in candidates:
+                score = balanced_accuracy_score(labels, scores >= candidate)
+                if score > expected_ba:
+                    expected_threshold, expected_ba = float(candidate), float(score)
+            self.assertEqual(threshold, expected_threshold)
+            self.assertAlmostEqual(ba, expected_ba, places=12)
+
     def test_dfa_output_gradient_matches_mean_unweighted_bce(self):
         logits = torch.tensor([-1.2, .1, 2.3], requires_grad=True)
         labels = torch.tensor([0.0, 1.0, 1.0])
@@ -223,6 +280,101 @@ class StrokePreprocessingTests(unittest.TestCase):
         labels = torch.tensor([0, 1] * 6, dtype=torch.float32)
         weights = fit_signed_least_squares(hidden, labels)
         self.assertTrue(torch.isfinite(weights).all())
+
+    def test_qubo_coordinate_refinement_never_increases_ising_energy(self):
+        from experiments.stroke_experiments.stroke_dfa_qubo import (
+            _ising_energy,
+            _refine_ising_bits,
+        )
+
+        h = {0: -1.5, 1: 0.25, 2: 0.75, 3: -0.4}
+        J = {(0, 1): 1.1, (0, 2): -0.7, (1, 2): 0.3, (1, 3): -1.2}
+        initial = (-1, 1, -1, 1)
+        refined = _refine_ising_bits(initial, h, J)
+        self.assertLessEqual(_ising_energy(refined, h, J), _ising_energy(initial, h, J) + 1e-9)
+        self.assertTrue(set(refined).issubset({-1, 1}))
+
+    def test_qubo_scale_is_finite_for_predictive_features_and_rejects_degenerate_features(self):
+        from experiments.stroke_experiments.stroke_dfa_qubo import calculate_alpha
+
+        torch.manual_seed(123)
+        hidden = torch.randn(120, 8, dtype=torch.float32)
+        labels = (hidden[:, 0] - 0.4 * hidden[:, 1] > 0).float()
+        alpha = calculate_alpha(hidden, labels)
+        self.assertTrue(np.isfinite(alpha))
+        self.assertGreater(alpha, 1e-8)
+
+        constant_features = torch.ones(40, 6, dtype=torch.float32)
+        balanced_labels = torch.tensor([0.0, 1.0] * 20)
+        with self.assertRaisesRegex(ValueError, "degenerate"):
+            calculate_alpha(constant_features, balanced_labels)
+
+    def test_ste_confidence_weighted_latent_start_preserves_signs_and_frees_weak_weights(self):
+        from experiments.stroke_experiments import stroke_dfa_ste_binary as ste
+
+        direction = torch.tensor([0.1, 1.0, -0.5, 0.0], dtype=torch.float32)
+        signs = torch.tensor([1.0, 1.0, -1.0, 1.0], dtype=torch.float32)
+        latent = ste._confidence_weighted_latent_start(direction, signs, seed=9)
+
+        self.assertTrue(torch.equal(torch.sign(latent), signs))
+        self.assertLess(abs(float(latent[0])), abs(float(latent[1])))
+        self.assertLess(abs(float(latent[3])), abs(float(latent[1])))
+        self.assertTrue(torch.all(latent.abs() < 0.21))
+
+    def test_ste_training_can_flip_low_confidence_binary_signs(self):
+        from experiments.stroke_experiments import stroke_dfa_ste_binary as ste
+
+        torch.manual_seed(8)
+        y_train = torch.tensor([0.0, 1.0] * 80)
+        H_train = torch.randn(160, 8)
+        H_train[:, 0] += y_train * 1.4
+        y_val = torch.tensor([0.0, 1.0] * 40)
+        H_val = torch.randn(80, 8)
+        H_val[:, 0] += y_val * 1.4
+
+        mean = H_train.mean(dim=0)
+        scale = H_train.std(dim=0, unbiased=False)
+        H_train = (H_train - mean) / scale
+        H_val = (H_val - mean) / scale
+
+        with patch.object(ste, "STE_EPOCHS", 200), \
+             patch.object(ste, "STE_LEARNING_RATE", 0.01), \
+             patch.object(ste, "STE_PATIENCE", 25), \
+             patch.object(ste, "STE_MIN_DELTA", 1e-4):
+            result = ste._fit_candidate(
+                H_train, y_train, H_val, y_val, seed=19, initialization="class_mean"
+            )
+
+        # Confidence-weighted starts must let the STE move at least one sign.
+        # Check final movement separately from best-checkpoint selection: the
+        # best validation candidate may legitimately still be the epoch-zero baseline.
+        self.assertGreater(result["final_weight_flips_from_initial"], 0)
+
+    def test_ste_preserves_epoch_zero_baseline_when_updates_do_not_help(self):
+        from experiments.stroke_experiments import stroke_dfa_ste_binary as ste
+
+        torch.manual_seed(8)
+        labels = torch.tensor([0.0, 1.0] * 20)
+        train = torch.randn(40, 6)
+        train[:, 0] += labels * 0.8
+        val_labels = torch.tensor([0.0, 1.0] * 10)
+        val = torch.randn(20, 6)
+        val[:, 0] += val_labels * 0.8
+
+        # A zero learning rate forces the same binary sign pattern at every
+        # checkpoint; the initial baseline must win ties and stop by patience.
+        with patch.object(ste, "STE_EPOCHS", 10), \
+             patch.object(ste, "STE_LEARNING_RATE", 0.0), \
+             patch.object(ste, "STE_PATIENCE", 2), \
+             patch.object(ste, "STE_MIN_DELTA", 1e-4):
+            result = ste._fit_candidate(
+                train, labels, val, val_labels, seed=18, initialization="class_mean"
+            )
+
+        self.assertEqual(result["best_epoch"], 0)
+        self.assertLessEqual(result["epochs_run"], 2)
+        self.assertGreaterEqual(result["validation_checkpoint_count"], 2)
+        self.assertTrue(torch.all(torch.abs(result["weights"]) == 1))
 
     def test_all_five_classifier_heads_run_from_one_valid_representation(self):
         from experiments.stroke_experiments.stroke_real_ls import train_real_ls
@@ -241,7 +393,7 @@ class StrokePreprocessingTests(unittest.TestCase):
             return torch.tensor(rng.normal(size=(len(labels), 6)) + signal, dtype=torch.float32)
         metadata = {
             "preprocessing_version": PREPROCESSING_VERSION, "dataset_sha256": "c" * 64, "split_seed": 11,
-            "preprocessing_config_hash": "d" * 64, "input_size": 23, "feature_names": [f"x{i}" for i in range(23)],
+            "preprocessing_config_hash": "d" * 64, "input_size": 20, "feature_names": [f"x{i}" for i in range(20)],
             "balancing_method": "random_oversample", "original_train_class_counts": {"0": 24, "1": 24},
             "resampled_train_class_counts": {"0": 24, "1": 24}, "validation_class_counts": {"0": 10, "1": 10},
             "test_class_counts": {"0": 10, "1": 10}, "resampled_train_row_ids": list(range(48)),
@@ -270,7 +422,7 @@ class StrokePreprocessingTests(unittest.TestCase):
         rng = np.random.default_rng(21)
         def split(n):
             labels = pd.Series([0, 1] * (n // 2), dtype=int)
-            values = rng.normal(size=(n, 23)).astype(np.float32)
+            values = rng.normal(size=(n, 20)).astype(np.float32)
             values[:, 0] += labels.to_numpy() * .25
             return pd.DataFrame(values), labels
         X_train, y_train = split(80)
@@ -334,10 +486,11 @@ class StrokePreprocessingTests(unittest.TestCase):
                             MULTISEED_METHOD_METADATA["Direct Binary"]["method_variant"])
         self.assertEqual(CONTROLLED_METHOD_METADATA["Direct Binary"]["bias_treatment"], "fixed at zero")
         self.assertEqual(MULTISEED_METHOD_METADATA["Direct Binary"]["objective"], "binary_cross_entropy_with_logits")
-        self.assertNotEqual(CONTROLLED_METHOD_METADATA["STE Binary"]["objective"],
-                            MULTISEED_METHOD_METADATA["STE Binary"]["objective"])
-        self.assertEqual(CONTROLLED_METHOD_METADATA["STE Binary"]["target_encoding"],
-                         "stroke 0 -> -1; stroke 1 -> +1")
+        self.assertNotEqual(CONTROLLED_METHOD_METADATA["STE Binary"]["method_variant"],
+                            MULTISEED_METHOD_METADATA["STE Binary"]["method_variant"])
+        self.assertEqual(CONTROLLED_METHOD_METADATA["STE Binary"]["objective"],
+                         "binary cross entropy with logits")
+        self.assertEqual(CONTROLLED_METHOD_METADATA["STE Binary"]["target_encoding"], "stroke labels {0,1}")
         self.assertEqual(MULTISEED_METHOD_METADATA["STE Binary"]["target_encoding"], "stroke labels {0,1}")
 
     def test_end_to_end_synthetic_csv_through_models_and_all_heads(self):
@@ -388,6 +541,43 @@ class StrokePreprocessingTests(unittest.TestCase):
             self.assertEqual(len(dfa["y_train"]), dfa["H_train"].shape[0])
             self.assertEqual(metadata()["split_seed"], 13)
             self.assertTrue(all(np.isfinite(item["balanced_accuracy"]) for item in head_results))
+            direct = next(item for item in head_results if item["method"] == "Direct Binary")
+            self.assertEqual(direct["hidden_feature_transform"], "train_fitted_hidden_mean_std")
+            ridge = next(item for item in head_results if item["method"] == "Binarized Ridge LS (refit scale+bias)")
+            self.assertEqual(ridge["hidden_feature_transform"], "train_fitted_hidden_mean_std")
+            ste = next(item for item in head_results if item["method"] == "STE Binary")
+            self.assertEqual(ste["candidate_initializations"], 3)
+            self.assertIn(ste["initialization"], {"ridge", "class_mean", "random"})
+            self.assertEqual(ste["hidden_feature_transform"], "train_fitted_hidden_mean_std")
+            self.assertTrue(np.isfinite(ste["validation_f1"]))
+            self.assertTrue(np.isfinite(ste["validation_selection_score"]))
+            self.assertAlmostEqual(
+                ste["validation_selection_score"],
+                np.mean([ste["validation_balanced_accuracy"], ste["validation_f1"],
+                         ste["validation_pr_auc"], ste["validation_roc_auc"]]),
+                places=7,
+            )
+            qubo = next(item for item in head_results if item["method"] == "QUBO Binary")
+            self.assertGreaterEqual(qubo["qubo_candidate_count"], 1)
+            self.assertTrue(np.isfinite(qubo["base_alpha"]))
+            self.assertTrue(np.isfinite(qubo["validation_f1"]))
+            self.assertTrue(np.isfinite(qubo["validation_selection_score"]))
+            self.assertAlmostEqual(
+                qubo["validation_selection_score"],
+                np.mean([qubo["validation_balanced_accuracy"], qubo["validation_f1"],
+                         qubo["validation_pr_auc"], qubo["validation_roc_auc"]]),
+                places=7,
+            )
+            from utils.stroke_config import QUBO_ALPHA_MULTIPLIERS
+            self.assertIn(qubo["alpha_multiplier"], QUBO_ALPHA_MULTIPLIERS)
+            source = qubo["qubo_candidate_source"]
+            self.assertTrue(
+                source in {"annealing", "coordinate_refinement", "class_mean_seed", "ridge_seed"}
+                or source.endswith("_qubo_refined")
+                or source.startswith("random_seed_")
+            )
+            self.assertGreaterEqual(qubo["qubo_num_sweeps"], 1)
+            self.assertGreaterEqual(qubo["qubo_random_seed_starts"], 0)
 
 
 if __name__ == "__main__":
