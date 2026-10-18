@@ -197,11 +197,12 @@ def train_qubo(representation_path, seed):
         val_metrics = calculate_metrics(y_val.numpy(), val_scores.numpy(), threshold)
         # Balanced accuracy is the primary operating-point objective; ranking
         # metrics break ties to discourage validation choices with poor ranking.
+        # Energies from different alpha multipliers are on different scales;
+        # never compare those energies across scale settings as a tie-breaker.
         key = (
             float(val_ba),
             float(val_metrics["pr_auc"]),
             float(val_metrics["roc_auc"]),
-            -float(candidate["energy"]),
         )
         if best is None or key > best["selection_key"]:
             best = {
