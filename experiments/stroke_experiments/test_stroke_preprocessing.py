@@ -234,6 +234,21 @@ class StrokePreprocessingTests(unittest.TestCase):
         weights = fit_signed_least_squares(hidden, labels)
         self.assertTrue(torch.isfinite(weights).all())
 
+    def test_qubo_scale_is_finite_for_predictive_features_and_rejects_degenerate_features(self):
+        from experiments.stroke_experiments.stroke_dfa_qubo import calculate_alpha
+
+        torch.manual_seed(123)
+        hidden = torch.randn(120, 8, dtype=torch.float32)
+        labels = (hidden[:, 0] - 0.4 * hidden[:, 1] > 0).float()
+        alpha = calculate_alpha(hidden, labels)
+        self.assertTrue(np.isfinite(alpha))
+        self.assertGreater(alpha, 1e-8)
+
+        constant_features = torch.ones(40, 6, dtype=torch.float32)
+        balanced_labels = torch.tensor([0.0, 1.0] * 20)
+        with self.assertRaisesRegex(ValueError, "degenerate"):
+            calculate_alpha(constant_features, balanced_labels)
+
     def test_all_five_classifier_heads_run_from_one_valid_representation(self):
         from experiments.stroke_experiments.stroke_real_ls import train_real_ls
         from experiments.stroke_experiments.stroke_dfa_binarized_ls import train_binarized_ls
