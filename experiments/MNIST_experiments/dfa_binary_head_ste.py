@@ -179,7 +179,7 @@ def train_binary_head_ste(
     )
 
     with Timer() as training_timer:
-
+        for epoch in range(epochs):
             optimizer.zero_grad()
 
             # HARD binary weights during forward pass
@@ -289,18 +289,6 @@ def evaluate_binary_head(
         total += labels.size(0)
 
     return 100.0 * correct / total
-
-
-
-    append_result(
-        experiment="dfa_binary_head_ste",
-        method="BNN + DFA + STE Binary Head",
-        seed=seed,
-        test_accuracy=test_accuracy,
-        test_loss=test_loss if "test_loss" in locals() else None,
-        training_time_sec=training_timer.seconds if "training_timer" in locals() else None,
-        parameter_count=count_parameters(model),
-    )
 
 
 if __name__ == "__main__":
