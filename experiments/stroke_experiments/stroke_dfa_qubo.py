@@ -1,9 +1,11 @@
 """QUBO/Ising binary classifier head for Stroke DFA representations.
 
-The hidden units are standardized from training representations only. A bounded
-scale sweep is performed and distinct low-energy Ising samples are ranked by
-validation balanced accuracy, then validation PR-AUC and ROC-AUC. Test labels
-are not used for scale, candidate, or threshold selection.
+Hidden units are standardized from training representations only. A bounded
+scale sweep combines simulated-annealing samples with class-mean, Ridge, and
+random training-only binary starts refined under the training Ising energy.
+Candidates are ranked using validation balanced accuracy, F1, PR-AUC, and
+ROC-AUC, with validation-only threshold selection. Test labels do not take part
+in calibration, candidate construction, ranking, or threshold selection.
 """
 import sys
 from pathlib import Path
