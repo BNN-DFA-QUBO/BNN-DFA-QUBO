@@ -19,5 +19,6 @@ STE_LEARNING_RATE = 0.01
 QUBO_NUM_READS = 100
 # Explore binary-head coupling strengths; validation selects the QUBO candidate.
 QUBO_ALPHA_MULTIPLIERS = (0.125, 0.25, 0.5, 1.0, 2.0, 4.0, 8.0)
+QUBO_TOP_CANDIDATES_PER_SCALE = 10
 
 DEVICE_PRIORITY = ["mps", "cuda", "cpu"]
