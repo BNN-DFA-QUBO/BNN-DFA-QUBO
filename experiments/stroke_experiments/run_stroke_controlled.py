@@ -274,6 +274,7 @@ def save_results(results, results_path=None):
         "actual_positive",
         "threshold",
         "validation_balanced_accuracy",
+        "validation_selection_score",
         "validation_f1",
         "validation_pr_auc",
         "validation_roc_auc",
