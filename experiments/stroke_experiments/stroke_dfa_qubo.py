@@ -54,6 +54,36 @@ def build_ising_model(H, target, alpha):
     return h, J
 
 
+def _ising_energy(bits, h, J):
+    return float(
+        sum(float(h.get(i, 0.0)) * int(bits[i]) for i in range(len(bits)))
+        + sum(float(value) * int(bits[i]) * int(bits[j]) for (i, j), value in J.items())
+    )
+
+
+def _refine_ising_bits(bits, h, J, max_passes=20):
+    """Greedy single-spin descent using only the training-derived Ising energy."""
+    spins = [int(value) for value in bits]
+    neighbors = [[] for _ in spins]
+    for (i, j), coupling in J.items():
+        neighbors[i].append((j, float(coupling)))
+        neighbors[j].append((i, float(coupling)))
+
+    for _ in range(int(max_passes)):
+        changed = False
+        for i in range(len(spins)):
+            local_field = float(h.get(i, 0.0)) + sum(
+                coupling * spins[j] for j, coupling in neighbors[i]
+            )
+            delta_energy = -2.0 * spins[i] * local_field
+            if delta_energy < -1e-10:
+                spins[i] *= -1
+                changed = True
+        if not changed:
+            break
+    return tuple(spins)
+
+
 def optimize_binary_class(H, target, alpha, num_reads, seed):
     """Return the lowest-energy binary {-1,+1} weight vector from one solve."""
     h, J = build_ising_model(H, target, alpha)
@@ -112,15 +142,23 @@ def sample_binary_candidates(
                 1 if int(row[variable_positions[i]]) == 1 else -1
                 for i in range(hidden_size)
             )
-            if bits in seen:
-                continue
-            seen.add(bits)
-            candidates.append({
-                "weights": torch.tensor(bits, dtype=torch.float32),
-                "alpha": alpha,
-                "alpha_multiplier": multiplier,
-                "energy": float(energies[index]),
-            })
+            # Keep both the annealer sample and its training-energy coordinate
+            # refinement. Deduplication preserves candidate diversity across scales.
+            alternatives = (
+                (bits, "annealing"),
+                (_refine_ising_bits(bits, h, J), "coordinate_refinement"),
+            )
+            for candidate_bits, source in alternatives:
+                if candidate_bits in seen:
+                    continue
+                seen.add(candidate_bits)
+                candidates.append({
+                    "weights": torch.tensor(candidate_bits, dtype=torch.float32),
+                    "alpha": alpha,
+                    "alpha_multiplier": multiplier,
+                    "energy": _ising_energy(candidate_bits, h, J),
+                    "candidate_source": source,
+                })
     if not candidates:
         raise RuntimeError("QUBO annealing returned no distinct binary candidates")
     return candidates
@@ -238,6 +276,7 @@ def train_qubo(representation_path, seed):
         "qubo_alpha_multipliers": list(QUBO_ALPHA_MULTIPLIERS),
         "qubo_candidate_count": len(candidates),
         "qubo_energy": float(best["candidate"]["energy"]),
+        "qubo_candidate_source": best["candidate"]["candidate_source"],
         "hidden_feature_transform": transform["transform"],
         "standardized_constant_units": transform["constant_units"],
         **metrics,
