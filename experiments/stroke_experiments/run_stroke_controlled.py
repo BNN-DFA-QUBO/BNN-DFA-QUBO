@@ -160,18 +160,31 @@ def run_experiments(seeds=None, split_seed=SPLIT_SEED, balancing_method=BALANCIN
         for method_name, method_function, method_mode in methods:
 
             print()
-            print(
-                f"Running {method_name}..."
-            )
+            print(f"Running {method_name}...")
 
-            if method_mode == "seed":
-                result = method_function(representation_path, seed)
-            elif method_mode in ("legacy", "ridge"):
-                result = method_function(representation_path, ls_solver=method_mode)
-            else:
-                result = method_function(representation_path)
+            failed = False
+            try:
+                if method_mode == "seed":
+                    result = method_function(representation_path, seed)
+                elif method_mode in ("legacy", "ridge"):
+                    result = method_function(representation_path, ls_solver=method_mode)
+                else:
+                    result = method_function(representation_path)
+            except ValueError as exc:
+                # A degenerate QUBO scale is a scientific failure for this head,
+                # but should not erase successful results from the other seeds.
+                if method_name != "QUBO Binary" or "QUBO scale calibration is degenerate" not in str(exc):
+                    raise
+                result = {
+                    "method": method_name,
+                    "status": "failed",
+                    "failure_reason": str(exc),
+                }
+                failed = True
 
             result["method"] = method_name
+            result.setdefault("status", "ok")
+            result.setdefault("failure_reason", "")
             result["experiment_type"] = "controlled_end_to_end_head_comparison"
             result["seed"] = seed
             result["model_seed"] = seed
@@ -182,7 +195,7 @@ def run_experiments(seeds=None, split_seed=SPLIT_SEED, balancing_method=BALANCIN
             result["preprocessing_config_hash"] = preprocessing_metadata["preprocessing_config_hash"]
             result["dataset_sha256"] = preprocessing_metadata["dataset_sha256"]
             result["balancing_method"] = preprocessing_metadata["balancing_method"]
-            result["head_seed"] = result.get("head_seed", "")
+            result["head_seed"] = result.get("head_seed", seed if method_mode == "seed" else "")
             result.update(CONTROLLED_METHOD_METADATA[method_name])
             result["loss_configuration"] = CONTROLLED_METHOD_METADATA[method_name]["objective"]
             result["split_class_counts"] = json.dumps({
@@ -191,33 +204,17 @@ def run_experiments(seeds=None, split_seed=SPLIT_SEED, balancing_method=BALANCIN
                 "validation": preprocessing_metadata["validation_class_counts"],
                 "test": preprocessing_metadata["test_class_counts"],
             }, sort_keys=True)
-            result["representation_path"] = (
-                representation_path
-            )
+            result["representation_path"] = representation_path
 
-            all_results.append(
-                result
-            )
+            all_results.append(result)
 
-            print(
-                f"Test BA: "
-                f"{result['balanced_accuracy'] * 100:.4f}%"
-            )
-
-            print(
-                f"F1: "
-                f"{result['f1'] * 100:.4f}%"
-            )
-
-            print(
-                f"ROC-AUC: "
-                f"{result['roc_auc'] * 100:.4f}%"
-            )
-
-            print(
-                f"PR-AUC: "
-                f"{result['pr_auc'] * 100:.4f}%"
-            )
+            if failed:
+                print(f"QUBO head FAILED for seed {seed}: {result['failure_reason']}")
+            else:
+                print(f"Test BA: {result['balanced_accuracy'] * 100:.4f}%")
+                print(f"F1: {result['f1'] * 100:.4f}%")
+                print(f"ROC-AUC: {result['roc_auc'] * 100:.4f}%")
+                print(f"PR-AUC: {result['pr_auc'] * 100:.4f}%")
 
     save_results(all_results, results_path)
 
@@ -245,6 +242,8 @@ def save_results(results, results_path=None):
     fieldnames = [
         "experiment_type",
         "method",
+        "status",
+        "failure_reason",
         "method_variant",
         "seed",
         "model_seed",
