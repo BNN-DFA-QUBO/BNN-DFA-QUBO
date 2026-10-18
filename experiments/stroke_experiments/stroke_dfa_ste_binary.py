@@ -10,6 +10,7 @@ from pathlib import Path
 
 sys.path.append(str(Path(__file__).resolve().parents[2]))
 
+import numpy as np
 import torch
 
 from models.ls_heads import fit_ridge_regression
@@ -77,7 +78,14 @@ def _fit_candidate(H_train, y_train, H_val, y_val, seed, initialization):
         val_scores = (H_val @ weights) / logit_scale + bias
     threshold, validation_ba = find_best_threshold(y_val.numpy(), val_scores.numpy())
     validation_metrics = calculate_metrics(y_val.numpy(), val_scores.numpy(), threshold)
+    validation_selection_score = float(np.mean([
+        validation_ba,
+        validation_metrics["f1"],
+        validation_metrics["pr_auc"],
+        validation_metrics["roc_auc"],
+    ]))
     selection_key = (
+        validation_selection_score,
         float(validation_ba),
         float(validation_metrics["f1"]),
         float(validation_metrics["pr_auc"]),
@@ -85,6 +93,7 @@ def _fit_candidate(H_train, y_train, H_val, y_val, seed, initialization):
     )
     return {
         "selection_key": selection_key,
+        "validation_selection_score": validation_selection_score,
         "weights": weights.detach().clone(),
         "bias": float(bias.detach().item()),
         "threshold": float(threshold),
@@ -97,7 +106,7 @@ def _fit_candidate(H_train, y_train, H_val, y_val, seed, initialization):
 
 
 def train_ste_binary(representation_path, seed):
-    """Train three STE starts; rank by validation BA then F1, PR-AUC, and ROC-AUC."""
+    """Train three STE starts; select by equal-weight validation BA/F1/PR-AUC/ROC-AUC composite."""
     data = load_representation(representation_path)
     H_train, H_val, H_test, transform = standardize_hidden_features(
         data["H_train"], data["H_val"], data["H_test"]
@@ -133,6 +142,7 @@ def train_ste_binary(representation_path, seed):
         "head_seed": int(seed),
         "threshold": best["threshold"],
         "validation_balanced_accuracy": best["validation_balanced_accuracy"],
+        "validation_selection_score": best["validation_selection_score"],
         "validation_f1": best["validation_f1"],
         "validation_pr_auc": best["validation_pr_auc"],
         "validation_roc_auc": best["validation_roc_auc"],
