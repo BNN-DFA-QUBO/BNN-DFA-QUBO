@@ -122,6 +122,28 @@ class StrokePreprocessingTests(unittest.TestCase):
         self.assertNotIn("future work category", pre.encoder.categories_[0])
         self.assertNotIn("future smoking category", pre.encoder.categories_[1])
 
+    def test_binary_hidden_standardization_uses_training_statistics_only(self):
+        from utils.stroke_binary_features import standardize_hidden_features
+
+        train = torch.tensor([[1.0, 5.0, 2.0], [3.0, 5.0, 4.0], [5.0, 5.0, 6.0]])
+        validation = torch.tensor([[100.0, 25.0, 10.0]])
+        test = torch.tensor([[-100.0, -15.0, 0.0]])
+        train_scaled, val_scaled, test_scaled, metadata = standardize_hidden_features(
+            train, validation, test
+        )
+        torch.testing.assert_close(train_scaled.mean(0), torch.zeros(3), atol=1e-6, rtol=0)
+        torch.testing.assert_close(
+            train_scaled.std(0, unbiased=False),
+            torch.tensor([1.0, 0.0, 1.0]),
+            atol=1e-6,
+            rtol=0,
+        )
+        # Validation/test do not refit the scaler; their out-of-range values stay out-of-range.
+        self.assertGreater(float(val_scaled[0, 0]), 10.0)
+        self.assertLess(float(test_scaled[0, 0]), -10.0)
+        self.assertEqual(metadata["constant_units"], 1)
+        self.assertEqual(metadata["transform"], "train_fitted_hidden_mean_std")
+
     def test_balance_only_train_counts_provenance_and_reproducibility(self):
         with tempfile.TemporaryDirectory(dir=Path("data")) as tmp:
             root = Path(tmp)
@@ -365,10 +387,11 @@ class StrokePreprocessingTests(unittest.TestCase):
                             MULTISEED_METHOD_METADATA["Direct Binary"]["method_variant"])
         self.assertEqual(CONTROLLED_METHOD_METADATA["Direct Binary"]["bias_treatment"], "fixed at zero")
         self.assertEqual(MULTISEED_METHOD_METADATA["Direct Binary"]["objective"], "binary_cross_entropy_with_logits")
-        self.assertNotEqual(CONTROLLED_METHOD_METADATA["STE Binary"]["objective"],
-                            MULTISEED_METHOD_METADATA["STE Binary"]["objective"])
-        self.assertEqual(CONTROLLED_METHOD_METADATA["STE Binary"]["target_encoding"],
-                         "stroke 0 -> -1; stroke 1 -> +1")
+        self.assertNotEqual(CONTROLLED_METHOD_METADATA["STE Binary"]["method_variant"],
+                            MULTISEED_METHOD_METADATA["STE Binary"]["method_variant"])
+        self.assertEqual(CONTROLLED_METHOD_METADATA["STE Binary"]["objective"],
+                         "binary cross entropy with logits")
+        self.assertEqual(CONTROLLED_METHOD_METADATA["STE Binary"]["target_encoding"], "stroke labels {0,1}")
         self.assertEqual(MULTISEED_METHOD_METADATA["STE Binary"]["target_encoding"], "stroke labels {0,1}")
 
     def test_end_to_end_synthetic_csv_through_models_and_all_heads(self):
@@ -419,6 +442,14 @@ class StrokePreprocessingTests(unittest.TestCase):
             self.assertEqual(len(dfa["y_train"]), dfa["H_train"].shape[0])
             self.assertEqual(metadata()["split_seed"], 13)
             self.assertTrue(all(np.isfinite(item["balanced_accuracy"]) for item in head_results))
+            ste = next(item for item in head_results if item["method"] == "STE Binary")
+            self.assertEqual(ste["candidate_initializations"], 3)
+            self.assertIn(ste["initialization"], {"ridge", "class_mean", "random"})
+            self.assertEqual(ste["hidden_feature_transform"], "train_fitted_hidden_mean_std")
+            qubo = next(item for item in head_results if item["method"] == "QUBO Binary")
+            self.assertGreaterEqual(qubo["qubo_candidate_count"], 1)
+            self.assertTrue(np.isfinite(qubo["base_alpha"]))
+            self.assertIn(qubo["alpha_multiplier"], (0.125, 0.25, 0.5, 1.0, 2.0, 4.0, 8.0))
 
 
 if __name__ == "__main__":
