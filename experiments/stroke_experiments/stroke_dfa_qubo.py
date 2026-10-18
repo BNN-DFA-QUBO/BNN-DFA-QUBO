@@ -146,9 +146,16 @@ def calculate_alpha(
         raise ValueError("QUBO scale calibration expects binary labels encoded as {0,1}")
 
     signed_targets = 2.0 * labels64 - 1.0
-    coefficients = fit_ridge_regression(
-        H64, signed_targets, lambda_relative=lambda_relative
-    )[:-1, 0]
+    try:
+        coefficients = fit_ridge_regression(
+            H64, signed_targets, lambda_relative=lambda_relative
+        )[:-1, 0]
+    except ValueError as exc:
+        if "Feature energy is zero or non-finite" in str(exc):
+            raise ValueError(
+                "QUBO scale calibration is degenerate (hidden features have zero energy)."
+            ) from exc
+        raise
     alpha = torch.linalg.vector_norm(coefficients) / (H64.shape[1] ** 0.5)
     alpha_value = float(alpha.item())
     if not torch.isfinite(alpha) or alpha_value <= 1e-8:
