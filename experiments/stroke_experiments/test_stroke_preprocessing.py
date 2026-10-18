@@ -19,6 +19,12 @@ from experiments.stroke_experiments.stroke_dfa_least_squares import fit_signed_l
 
 
 class StrokePreprocessingTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        # The test fixtures use temporary folders inside data/, which may have
+        # been removed during a clean-from-scratch pipeline run.
+        Path("data").mkdir(parents=True, exist_ok=True)
+
     @staticmethod
     def sample():
         n = 400
