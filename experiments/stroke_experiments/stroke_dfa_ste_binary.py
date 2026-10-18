@@ -59,8 +59,9 @@ def _fit_candidate(H_train, y_train, H_val, y_val, seed, initialization):
 
     for _ in range(STE_EPOCHS):
         optimizer.zero_grad(set_to_none=True)
+        sign_weights = _binary_sign(latent_weights)
         binary_weights = (
-            latent_weights.sign().detach()
+            sign_weights.detach()
             - latent_weights.detach()
             + latent_weights
         )
@@ -78,6 +79,7 @@ def _fit_candidate(H_train, y_train, H_val, y_val, seed, initialization):
     validation_metrics = calculate_metrics(y_val.numpy(), val_scores.numpy(), threshold)
     selection_key = (
         float(validation_ba),
+        float(validation_metrics["f1"]),
         float(validation_metrics["pr_auc"]),
         float(validation_metrics["roc_auc"]),
     )
@@ -87,6 +89,7 @@ def _fit_candidate(H_train, y_train, H_val, y_val, seed, initialization):
         "bias": float(bias.detach().item()),
         "threshold": float(threshold),
         "validation_balanced_accuracy": float(validation_ba),
+        "validation_f1": float(validation_metrics["f1"]),
         "validation_pr_auc": float(validation_metrics["pr_auc"]),
         "validation_roc_auc": float(validation_metrics["roc_auc"]),
         "initialization": initialization,
@@ -130,6 +133,7 @@ def train_ste_binary(representation_path, seed):
         "head_seed": int(seed),
         "threshold": best["threshold"],
         "validation_balanced_accuracy": best["validation_balanced_accuracy"],
+        "validation_f1": best["validation_f1"],
         "validation_pr_auc": best["validation_pr_auc"],
         "validation_roc_auc": best["validation_roc_auc"],
         "binary_weights": best["weights"].numpy(),
