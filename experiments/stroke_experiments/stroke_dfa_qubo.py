@@ -117,7 +117,6 @@ def sample_binary_candidates(
     candidates = []
     seen = set()
     sampler = neal.SimulatedAnnealingSampler()
-    variable_positions = None
     hidden_size = H_cpu.shape[1]
 
     for scale_index, multiplier in enumerate(alpha_multipliers):
@@ -132,8 +131,7 @@ def sample_binary_candidates(
             num_reads=int(num_reads),
             seed=int(seed) + 104729 * scale_index,
         )
-        if variable_positions is None:
-            variable_positions = {variable: i for i, variable in enumerate(response.variables)}
+        variable_positions = {variable: i for i, variable in enumerate(response.variables)}
         energies = np.asarray(response.record.energy, dtype=np.float64)
         samples = np.asarray(response.record.sample)
         for index in np.argsort(energies)[: min(int(top_k), len(energies))]:
@@ -265,6 +263,7 @@ def train_qubo(representation_path, seed):
         "head_seed": int(seed),
         "threshold": best["threshold"],
         "validation_balanced_accuracy": best["validation_balanced_accuracy"],
+        "validation_f1": best["validation_f1"],
         "validation_pr_auc": best["validation_pr_auc"],
         "validation_roc_auc": best["validation_roc_auc"],
         "binary_weights": best["weights"].numpy(),
