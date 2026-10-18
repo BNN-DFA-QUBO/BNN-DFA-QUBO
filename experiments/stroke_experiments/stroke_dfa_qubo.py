@@ -233,12 +233,13 @@ def train_qubo(representation_path, seed):
         val_scores = alpha * (H_val @ weights) + bias
         threshold, val_ba = find_best_threshold(y_val.numpy(), val_scores.numpy())
         val_metrics = calculate_metrics(y_val.numpy(), val_scores.numpy(), threshold)
-        # Balanced accuracy is the primary operating-point objective; ranking
-        # metrics break ties to discourage validation choices with poor ranking.
+        # Balanced accuracy is the primary operating-point objective. Among
+        # BA-tied candidates, prefer F1 first, then PR-AUC and ROC-AUC.
         # Energies from different alpha multipliers are on different scales;
         # never compare those energies across scale settings as a tie-breaker.
         key = (
             float(val_ba),
+            float(val_metrics["f1"]),
             float(val_metrics["pr_auc"]),
             float(val_metrics["roc_auc"]),
         )
@@ -251,6 +252,7 @@ def train_qubo(representation_path, seed):
                 "bias": float(bias),
                 "threshold": float(threshold),
                 "validation_balanced_accuracy": float(val_ba),
+                "validation_f1": float(val_metrics["f1"]),
                 "validation_pr_auc": float(val_metrics["pr_auc"]),
                 "validation_roc_auc": float(val_metrics["roc_auc"]),
             }
