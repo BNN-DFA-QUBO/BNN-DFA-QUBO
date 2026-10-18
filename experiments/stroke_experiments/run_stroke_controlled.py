@@ -40,18 +40,18 @@ CONTROLLED_METHOD_METADATA = {
         "optimization_procedure": "numpy.linalg.lstsq, sign-binarize weights, validation-selected threshold",
     },
     "Binarized Ridge LS (refit scale+bias)": {
-        "method_variant": "ridge_ls_then_binary_weights_refit_scale_bias",
+        "method_variant": "standardized_ridge_ls_then_binary_weights_refit_scale_bias",
         "objective": "regularized squared residual error for initial weights; training-only least-squares refit after binarization",
         "target_encoding": "stroke labels {0,1}",
         "bias_treatment": "class-independent scalar scale and intercept refitted on training rows after sign binarization",
-        "optimization_procedure": "float64 augmented SVD Ridge LS; sign-binarize feature weights; training-only scale/intercept refit; validation-selected threshold",
+        "optimization_procedure": "train-only hidden standardization; float64 augmented SVD Ridge LS; sign-binarize feature weights; training-only scale/intercept refit; validation-selected threshold",
     },
     "Direct Binary": {
-        "method_variant": "class_mean_sign_direction",
+        "method_variant": "standardized_class_mean_sign_direction",
         "objective": "no loss optimization; sign of positive-minus-negative training mean",
         "target_encoding": "stroke labels {0,1} define the two class means",
         "bias_treatment": "fixed at zero",
-        "optimization_procedure": "analytic class means then validation-selected threshold",
+        "optimization_procedure": "train-only hidden standardization; analytic class means; sign of class-mean difference; validation-selected threshold",
     },
     "STE Binary": {
         "method_variant": "ste_bce_standardized_validation_selected_initialization",
