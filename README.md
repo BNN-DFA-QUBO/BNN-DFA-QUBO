@@ -144,6 +144,8 @@ python -m experiments.stroke_experiments.process_stroke --seed 42 --balancing ra
 
 The preprocessing flow creates stratified 70/15/15 train/validation/test splits, fits learned preprocessing on the training split only, and applies optional balancing to training rows only. Validation and test remain imbalanced. The saved metadata records the raw-data hash, split seed, feature names/order, preprocessing configuration, class counts, and other provenance information.
 
+The current Stroke preprocessing version is `finalboss-stroke-v3-scaled-inputs`. It keeps age, glucose, BMI, and the age–glucose interaction as train-fitted standardized Yeo–Johnson features; it does not feed their large raw-valued counterparts directly to the BNN. This keeps input magnitudes more comparable and prevents the unscaled interaction from dominating the first binary layer. The derived clinical flags and categorical encodings are preserved. Any representation or preprocessing artifacts from an older version must be regenerated before running the controlled comparison.
+
 The standard paths are controlled by these environment variables:
 
 - `STROKE_DATA_DIR`: local directory for preprocessing artifacts and representations; defaults to `data/stroke`.
@@ -162,6 +164,8 @@ Each model seed trains a DFA representation; all classifier heads for that seed 
 **Rerun protection:** the controlled runner refuses to replace existing representation, model, or result files unless `--overwrite` is supplied. Only use `--overwrite` when you intend to replace those artifacts. For isolated runs, pass a new nested `--output-dir`, for example `data/stroke_runs/run_20261014/stroke`; the runner stores its CSV beside that output directory.
 
 ### Stroke LS variants
+
+The QUBO head calibrates its score scale using the shared float64 SVD Ridge solver on the same signed `{-1,+1}` target encoding used by its QUBO objective. The scale must be finite and non-negligible; degenerate representations now raise a clear error instead of silently returning an all-positive classifier. Stroke DFA checkpoints are selected using validation balanced accuracy over decision thresholds, rather than a hard-coded probability cutoff of 0.5.
 
 The existing Stroke Real-LS path is an unregularized NumPy least-squares fit with `{0,1}` targets and remains the default because it outperformed Ridge LS in the five-seed diagnostic. The Stroke Binarized Ridge-LS path uses the shared float64 augmented SVD solver, signs the feature weights, and refits the scale and intercept using training representations only. In the corrected five-seed diagnostic, it improved mean test balanced accuracy and ROC-AUC over legacy Binarized LS and reduced seed-to-seed variation.
 
