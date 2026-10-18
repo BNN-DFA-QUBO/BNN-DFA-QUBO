@@ -4,7 +4,7 @@ SEEDS = [42, 123, 2024, 7, 99]
 
 SPLIT_SEED = int(os.environ.get("STROKE_SPLIT_SEED", "42"))
 BALANCING_METHOD = os.environ.get("STROKE_BALANCING_METHOD", "random_oversample")
-PREPROCESSING_VERSION = "finalboss-stroke-v2"
+PREPROCESSING_VERSION = "finalboss-stroke-v3-scaled-inputs"
 
 HIDDEN_SIZE = 64
 
