@@ -156,10 +156,10 @@ The standard paths are controlled by these environment variables:
 ### Run the complete controlled comparison
 
 ```powershell
-python -m experiments.stroke_experiments.run_stroke_controlled --split-seed 42 --seeds 42 123 2024 7 99 --balancing random_oversample
+python -m experiments.stroke_experiments.run_stroke_controlled --split-seed 42 --seeds 42 123 2024 7 99 --balancing random_oversample --ls-solver both
 ```
 
-Each model seed trains a DFA representation; all classifier heads for that seed use the same saved representation. Metrics include balanced accuracy, precision, recall, F1, ROC-AUC, PR-AUC, and confusion-matrix counts. The output records the representation seed, split seed, data/preprocessing provenance, target encoding, objective, and bias treatment.
+Each model seed trains a DFA representation; all classifier heads for that seed use the same saved representation. Metrics include balanced accuracy, precision, recall, F1, ROC-AUC, PR-AUC, and confusion-matrix counts. The output records the representation seed, split seed, data/preprocessing provenance, target encoding, objective, and bias treatment. With `--ls-solver both`, the legacy and Ridge-derived binarized LS heads are evaluated on the same representation per seed. The CSV includes `status` and `failure_reason` columns so a detected degenerate QUBO head is recorded explicitly and later seeds can still run.
 
 **Rerun protection:** the controlled runner refuses to replace existing representation, model, or result files unless `--overwrite` is supplied. Only use `--overwrite` when you intend to replace those artifacts. For isolated runs, pass a new nested `--output-dir`, for example `data/stroke_runs/run_20261014/stroke`; the runner stores its CSV beside that output directory.
 
