@@ -167,7 +167,9 @@ Each model seed trains a DFA representation; all classifier heads for that seed 
 
 The QUBO head calibrates its score scale using the shared float64 SVD Ridge solver on the same signed `{-1,+1}` target encoding used by its QUBO objective. The scale must be finite and non-negligible; degenerate representations now raise a clear error instead of silently returning an all-positive classifier. Stroke DFA checkpoints are selected using validation balanced accuracy over decision thresholds, rather than a hard-coded probability cutoff of 0.5.
 
-The existing Stroke Real-LS path is an unregularized NumPy least-squares fit with `{0,1}` targets and remains the default because it outperformed Ridge LS in the five-seed diagnostic. The Stroke Binarized Ridge-LS path uses the shared float64 augmented SVD solver, signs the feature weights, and refits the scale and intercept using training representations only. In the corrected five-seed diagnostic, it improved mean test balanced accuracy and ROC-AUC over legacy Binarized LS and reduced seed-to-seed variation.
+The existing Stroke Real-LS path is an unregularized NumPy least-squares fit with `{0,1}` targets. The Stroke Binarized Ridge-LS path uses the shared float64 augmented SVD solver, signs the feature weights, and refits the scale and intercept using training representations only.
+
+**Result-version note:** earlier five-seed comparisons were generated with preprocessing v2 and the old 23-feature input schema. Preprocessing v3 changes the input schema to 20 features and rescales continuous inputs, so those older metrics and head rankings must not be presented as the v3 results. Regenerate the complete controlled run and its summary under v3 before updating the paper or drawing conclusions about the current models.
 
 For a saved representation:
 
