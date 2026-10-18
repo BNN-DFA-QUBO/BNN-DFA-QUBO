@@ -9,6 +9,7 @@ import numpy as np
 import torch
 
 from utils.stroke_representation import load_representation
+from utils.stroke_binary_features import standardize_hidden_features
 from utils.stroke_metrics import (
     find_best_threshold,
     calculate_metrics
@@ -26,13 +27,13 @@ def train_direct_binary(
         representation_path
     )
 
-    H_train = data["H_train"]
-    H_val = data["H_val"]
-    H_test = data["H_test"]
+    H_train, H_val, H_test, transform = standardize_hidden_features(
+        data["H_train"], data["H_val"], data["H_test"]
+    )
 
-    y_train = data["y_train"]
-    y_val = data["y_val"]
-    y_test = data["y_test"]
+    y_train = torch.as_tensor(data["y_train"]).float().reshape(-1)
+    y_val = torch.as_tensor(data["y_val"]).float().reshape(-1)
+    y_test = torch.as_tensor(data["y_test"]).float().reshape(-1)
 
     positive_mask = y_train == 1
     negative_mask = y_train == 0
@@ -85,6 +86,8 @@ def train_direct_binary(
         "validation_balanced_accuracy": val_ba,
         "binary_weights": binary_weights.numpy(),
         "bias": 0.0,
+        "hidden_feature_transform": transform["transform"],
+        "standardized_constant_units": transform["constant_units"],
         **metrics
     }
 
