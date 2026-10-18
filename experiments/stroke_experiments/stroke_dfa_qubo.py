@@ -8,6 +8,8 @@ sys.path.append(
 import torch
 import neal
 
+from models.ls_heads import fit_ridge_regression
+
 from utils.stroke_representation import load_representation
 from utils.stroke_metrics import (
     find_best_threshold,
@@ -122,46 +124,39 @@ def optimize_binary_class(
 
 def calculate_alpha(
     H,
-    labels
+    labels,
+    lambda_relative=1e-4,
 ):
-    H = H.float()
+    """Estimate a QUBO score scale from a stable signed-target Ridge fit.
 
-    H_augmented = torch.cat(
-        [
-            H,
-            torch.ones(
-                H.shape[0],
-                1
-            )
-        ],
-        dim=1
+    The QUBO energy is written for targets in {-1,+1}, so scale calibration
+    uses that same encoding. The shared CPU float64 SVD Ridge solver is more
+    robust than an unregularized float32 multi-output solve on rank-deficient
+    hidden representations.
+    """
+    H64 = torch.as_tensor(H).detach().to(device="cpu", dtype=torch.float64)
+    labels64 = torch.as_tensor(labels).detach().reshape(-1).to(
+        device="cpu", dtype=torch.float64
     )
+    if H64.ndim != 2 or H64.shape[0] != labels64.shape[0] or H64.shape[0] == 0:
+        raise ValueError("QUBO scale calibration requires aligned non-empty hidden features and labels")
+    if not torch.isfinite(H64).all() or not torch.isfinite(labels64).all():
+        raise ValueError("QUBO scale calibration requires finite features and labels")
+    if not torch.isin(labels64, torch.tensor([0.0, 1.0], dtype=torch.float64)).all():
+        raise ValueError("QUBO scale calibration expects binary labels encoded as {0,1}")
 
-    Y = torch.nn.functional.one_hot(
-        labels.long(),
-        num_classes=2
-    ).float()
-
-    W_ls = torch.linalg.lstsq(
-        H_augmented,
-        Y
-    ).solution
-
-    W_ls_positive = W_ls[
-        :H.shape[1],
-        1
-    ]
-
-    alpha = (
-        torch.linalg.vector_norm(
-            W_ls_positive
+    signed_targets = 2.0 * labels64 - 1.0
+    coefficients = fit_ridge_regression(
+        H64, signed_targets, lambda_relative=lambda_relative
+    )[:-1, 0]
+    alpha = torch.linalg.vector_norm(coefficients) / (H64.shape[1] ** 0.5)
+    alpha_value = float(alpha.item())
+    if not torch.isfinite(alpha) or alpha_value <= 1e-8:
+        raise ValueError(
+            "QUBO scale calibration is degenerate (alpha is zero or near zero). "
+            "Inspect the saved representation for collapsed or non-informative hidden features."
         )
-        / (
-            H.shape[1] ** 0.5
-        )
-    )
-
-    return alpha.item()
+    return alpha_value
 
 
 def recover_bias(
