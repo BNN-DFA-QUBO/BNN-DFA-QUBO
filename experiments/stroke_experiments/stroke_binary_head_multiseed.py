@@ -22,6 +22,7 @@ from sklearn.metrics import (
     confusion_matrix,
 )
 from utils.stroke_representation import load_representation
+from utils.stroke_binary_features import standardize_hidden_features
 from utils.stroke_data import DATA_DIR
 from utils.stroke_metrics import find_best_threshold as shared_find_best_threshold
 
@@ -39,7 +40,7 @@ MULTISEED_METHOD_METADATA = {
         "objective": "binary_cross_entropy_with_logits",
         "target_encoding": "stroke labels {0,1}",
         "bias_treatment": "fixed at zero",
-        "optimization_procedure": "coordinate-wise sign flips from all-positive weights, greedy BCE improvement, at most 20 passes; validation-selected threshold",
+        "optimization_procedure": "train-only hidden standardization; coordinate-wise sign flips from all-positive weights, greedy BCE improvement, at most 20 passes; validation-selected threshold",
         "loss_configuration": "unweighted BCEWithLogitsLoss-style objective on fixed-representation training rows",
     },
     "STE Binary": {
@@ -73,9 +74,11 @@ def set_seed(seed):
 def load_data(representation_path):
     representation = load_representation(representation_path)
 
-    H_train = representation["H_train"].float()
-    H_val = representation["H_val"].float()
-    H_test = representation["H_test"].float()
+    H_train, H_val, H_test, transform = standardize_hidden_features(
+        representation["H_train"], representation["H_val"], representation["H_test"]
+    )
+    representation["head_hidden_feature_transform"] = transform["transform"]
+    representation["head_standardized_constant_units"] = transform["constant_units"]
 
     # Labels are stored with the representations so a separately regenerated split
     # can never silently misalign examples and learned features.
@@ -288,6 +291,8 @@ def main(representation_path=DATA_DIR / "stroke_dfa_representation_seed_42.pt", 
                 "method": "Direct Binary",
                 **MULTISEED_METHOD_METADATA["Direct Binary"],
                 "bias": 0.0,
+                "hidden_feature_transform": representation["head_hidden_feature_transform"],
+                "standardized_constant_units": representation["head_standardized_constant_units"],
                 **metrics
             }
         )
