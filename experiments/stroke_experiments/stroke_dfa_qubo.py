@@ -231,11 +231,18 @@ def train_qubo(representation_path, seed):
         val_scores = alpha * (H_val @ weights) + bias
         threshold, val_ba = find_best_threshold(y_val.numpy(), val_scores.numpy())
         val_metrics = calculate_metrics(y_val.numpy(), val_scores.numpy(), threshold)
-        # Balanced accuracy is the primary operating-point objective. Among
-        # BA-tied candidates, prefer F1 first, then PR-AUC and ROC-AUC.
-        # Energies from different alpha multipliers are on different scales;
-        # never compare those energies across scale settings as a tie-breaker.
+        # Compare the full validation metric profile instead of optimizing one
+        # metric in isolation. Every component is on [0,1]; balanced accuracy is
+        # the first tie-breaker. Test labels are never used for this ranking.
+        # Energies from different alpha multipliers are on different scales.
+        validation_selection_score = float(np.mean([
+            val_ba,
+            val_metrics["f1"],
+            val_metrics["pr_auc"],
+            val_metrics["roc_auc"],
+        ]))
         key = (
+            validation_selection_score,
             float(val_ba),
             float(val_metrics["f1"]),
             float(val_metrics["pr_auc"]),
@@ -244,6 +251,7 @@ def train_qubo(representation_path, seed):
         if best is None or key > best["selection_key"]:
             best = {
                 "selection_key": key,
+                "validation_selection_score": validation_selection_score,
                 "candidate": candidate,
                 "weights": weights,
                 "alpha": alpha,
@@ -263,6 +271,7 @@ def train_qubo(representation_path, seed):
         "head_seed": int(seed),
         "threshold": best["threshold"],
         "validation_balanced_accuracy": best["validation_balanced_accuracy"],
+        "validation_selection_score": best["validation_selection_score"],
         "validation_f1": best["validation_f1"],
         "validation_pr_auc": best["validation_pr_auc"],
         "validation_roc_auc": best["validation_roc_auc"],
