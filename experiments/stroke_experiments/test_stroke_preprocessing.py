@@ -281,6 +281,19 @@ class StrokePreprocessingTests(unittest.TestCase):
         weights = fit_signed_least_squares(hidden, labels)
         self.assertTrue(torch.isfinite(weights).all())
 
+    def test_qubo_coordinate_refinement_never_increases_ising_energy(self):
+        from experiments.stroke_experiments.stroke_dfa_qubo import (
+            _ising_energy,
+            _refine_ising_bits,
+        )
+
+        h = {0: -1.5, 1: 0.25, 2: 0.75, 3: -0.4}
+        J = {(0, 1): 1.1, (0, 2): -0.7, (1, 2): 0.3, (1, 3): -1.2}
+        initial = (-1, 1, -1, 1)
+        refined = _refine_ising_bits(initial, h, J)
+        self.assertLessEqual(_ising_energy(refined, h, J), _ising_energy(initial, h, J) + 1e-9)
+        self.assertTrue(set(refined).issubset({-1, 1}))
+
     def test_qubo_scale_is_finite_for_predictive_features_and_rejects_degenerate_features(self):
         from experiments.stroke_experiments.stroke_dfa_qubo import calculate_alpha
 
@@ -471,11 +484,23 @@ class StrokePreprocessingTests(unittest.TestCase):
             self.assertEqual(ste["hidden_feature_transform"], "train_fitted_hidden_mean_std")
             self.assertTrue(np.isfinite(ste["validation_f1"]))
             self.assertTrue(np.isfinite(ste["validation_selection_score"]))
+            self.assertAlmostEqual(
+                ste["validation_selection_score"],
+                np.mean([ste["validation_balanced_accuracy"], ste["validation_f1"],
+                         ste["validation_pr_auc"], ste["validation_roc_auc"]]),
+                places=7,
+            )
             qubo = next(item for item in head_results if item["method"] == "QUBO Binary")
             self.assertGreaterEqual(qubo["qubo_candidate_count"], 1)
             self.assertTrue(np.isfinite(qubo["base_alpha"]))
             self.assertTrue(np.isfinite(qubo["validation_f1"]))
             self.assertTrue(np.isfinite(qubo["validation_selection_score"]))
+            self.assertAlmostEqual(
+                qubo["validation_selection_score"],
+                np.mean([qubo["validation_balanced_accuracy"], qubo["validation_f1"],
+                         qubo["validation_pr_auc"], qubo["validation_roc_auc"]]),
+                places=7,
+            )
             from utils.stroke_config import QUBO_ALPHA_MULTIPLIERS
             self.assertIn(qubo["alpha_multiplier"], QUBO_ALPHA_MULTIPLIERS)
             self.assertIn(qubo["qubo_candidate_source"], {"annealing", "coordinate_refinement"})
