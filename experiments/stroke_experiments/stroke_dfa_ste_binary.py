@@ -28,22 +28,51 @@ def _binary_sign(values, fallback=None):
     return torch.where(signs == 0, torch.ones_like(signs), signs)
 
 
-def _initial_signs(name, H_train, y_train, seed):
+def _initial_direction(name, H_train, y_train, seed):
+    """Return a real-valued, train-only direction before binary sign projection."""
     generator = torch.Generator(device="cpu")
     generator.manual_seed(int(seed))
     if name == "random":
-        return _binary_sign(torch.randn(H_train.shape[1], generator=generator))
+        return torch.randn(H_train.shape[1], generator=generator)
     if name == "class_mean":
-        direction = H_train[y_train == 1].mean(0) - H_train[y_train == 0].mean(0)
-        return _binary_sign(direction)
+        return H_train[y_train == 1].mean(0) - H_train[y_train == 0].mean(0)
     if name == "ridge":
-        # Initialization uses training examples only; intercept is excluded.
         coefficients = fit_ridge_regression(
             H_train, y_train, lambda_relative=1e-3
         )[:-1, 0].to(dtype=torch.float32)
-        direction = H_train[y_train == 1].mean(0) - H_train[y_train == 0].mean(0)
-        return _binary_sign(coefficients, direction)
+        return coefficients
     raise ValueError(f"Unknown STE initialization: {name}")
+
+
+def _initial_signs(name, H_train, y_train, seed):
+    direction = _initial_direction(name, H_train, y_train, seed)
+    fallback = None
+    if name == "ridge":
+        fallback = H_train[y_train == 1].mean(0) - H_train[y_train == 0].mean(0)
+    return _binary_sign(direction, fallback)
+
+
+def _confidence_weighted_latent_start(direction, signs, seed):
+    """Make uncertain latent signs easier to flip while preserving initial signs.
+
+    STE's straight-through gradient updates latent real weights, but the forward
+    pass only observes sign(latent_weights). Initializing every magnitude to 0.5
+    can trap the optimizer in its starting binary vector. This start uses the
+    continuous training-derived direction as a confidence score: weak direction
+    components begin near zero, while stronger components begin farther away.
+    """
+    direction = torch.as_tensor(direction, dtype=torch.float32).detach()
+    signs = torch.as_tensor(signs, dtype=torch.float32).detach()
+    max_abs = direction.abs().max().clamp_min(1e-8)
+    confidence = (direction.abs() / max_abs).clamp(0.0, 1.0)
+    magnitudes = 0.025 + 0.175 * confidence
+    generator = torch.Generator(device="cpu")
+    generator.manual_seed(int(seed) + 19)
+    jitter = 0.001 * torch.randn(signs.shape, generator=generator)
+    latent = signs * magnitudes + jitter
+    # Jitter is deliberately too small to change the selected starting signs.
+    latent = torch.where(torch.sign(latent) == 0, signs * 0.025, latent)
+    return latent
 
 
 def _fit_candidate(H_train, y_train, H_val, y_val, seed, initialization):
@@ -55,9 +84,14 @@ def _fit_candidate(H_train, y_train, H_val, y_val, seed, initialization):
     positive). Checkpoint and stopping decisions use validation data only.
     """
     set_seed(seed)
-    signs = _initial_signs(initialization, H_train, y_train, seed)
-    latent_weights = (
-        0.5 * signs + 0.01 * torch.randn_like(signs)
+    direction = _initial_direction(initialization, H_train, y_train, seed)
+    fallback = None
+    if initialization == "ridge":
+        fallback = H_train[y_train == 1].mean(0) - H_train[y_train == 0].mean(0)
+    signs = _binary_sign(direction, fallback)
+    initial_binary_weights = signs.detach().clone()
+    latent_weights = _confidence_weighted_latent_start(
+        direction, signs, seed
     ).detach().requires_grad_(True)
     bias = torch.tensor(0.0, dtype=torch.float32, requires_grad=True)
     optimizer = torch.optim.Adam(
@@ -141,8 +175,17 @@ def _fit_candidate(H_train, y_train, H_val, y_val, seed, initialization):
         if epoch - last_significant_improvement >= patience:
             break
 
+    with torch.no_grad():
+        final_weights = _binary_sign(latent_weights).detach()
     best["epochs_run"] = int(epochs_run)
     best["validation_checkpoint_count"] = int(checkpoints)
+    best["weight_flips_from_initial"] = int(
+        (best["weights"] != initial_binary_weights).sum().item()
+    )
+    best["final_weight_flips_from_initial"] = int(
+        (final_weights != initial_binary_weights).sum().item()
+    )
+    best["initial_binary_weights"] = initial_binary_weights
     return best
 
 
@@ -196,6 +239,9 @@ def train_ste_binary(representation_path, seed):
         "ste_best_epoch": best["best_epoch"],
         "ste_patience": STE_PATIENCE,
         "ste_validation_checkpoints": best["validation_checkpoint_count"],
+        "ste_weight_flips_from_init": best["weight_flips_from_initial"],
+        "ste_final_weight_flips_from_init": best["final_weight_flips_from_initial"],
+        "ste_latent_init": "confidence_weighted_train_direction",
         "ste_learning_rate": STE_LEARNING_RATE,
         "training_loss": "BCEWithLogitsLoss on standardized hidden features with logits divided by sqrt(hidden_size); epoch-zero baseline plus validation-selected checkpoint",
         "hidden_feature_transform": transform["transform"],
