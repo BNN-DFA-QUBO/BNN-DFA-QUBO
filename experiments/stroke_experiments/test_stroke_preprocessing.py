@@ -468,7 +468,9 @@ class StrokePreprocessingTests(unittest.TestCase):
             qubo = next(item for item in head_results if item["method"] == "QUBO Binary")
             self.assertGreaterEqual(qubo["qubo_candidate_count"], 1)
             self.assertTrue(np.isfinite(qubo["base_alpha"]))
-            self.assertIn(qubo["alpha_multiplier"], (0.125, 0.25, 0.5, 1.0, 2.0, 4.0, 8.0))
+            from utils.stroke_config import QUBO_ALPHA_MULTIPLIERS
+            self.assertIn(qubo["alpha_multiplier"], QUBO_ALPHA_MULTIPLIERS)
+            self.assertIn(qubo["qubo_candidate_source"], {"annealing", "coordinate_refinement"})
 
 
 if __name__ == "__main__":
