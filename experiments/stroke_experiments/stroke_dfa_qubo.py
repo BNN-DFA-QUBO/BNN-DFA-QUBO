@@ -1,139 +1,133 @@
+"""QUBO/Ising binary classifier head for Stroke DFA representations.
+
+The hidden units are standardized from training representations only. A bounded
+scale sweep is performed and distinct low-energy Ising samples are ranked by
+validation balanced accuracy, then validation PR-AUC and ROC-AUC. Test labels
+are not used for scale, candidate, or threshold selection.
+"""
 import sys
 from pathlib import Path
 
-sys.path.append(
-    str(Path(__file__).resolve().parents[2])
-)
+sys.path.append(str(Path(__file__).resolve().parents[2]))
 
+import numpy as np
 import torch
 import neal
 
 from models.ls_heads import fit_ridge_regression
-
 from utils.stroke_representation import load_representation
-from utils.stroke_metrics import (
-    find_best_threshold,
-    calculate_metrics
-)
+from utils.stroke_binary_features import standardize_hidden_features
+from utils.stroke_metrics import find_best_threshold, calculate_metrics
 from utils.seed import set_seed
-from utils.stroke_config import QUBO_NUM_READS
+from utils.stroke_config import (
+    QUBO_NUM_READS,
+    QUBO_ALPHA_MULTIPLIERS,
+    QUBO_TOP_CANDIDATES_PER_SCALE,
+)
 
 
-def build_ising_model(
-    H,
-    target,
-    alpha
-):
-    H = H.float()
-    target = target.float()
+def build_ising_model(H, target, alpha):
+    """Build the Ising energy equivalent to centered signed-target squared error."""
+    H64 = torch.as_tensor(H).detach().to(device="cpu", dtype=torch.float64)
+    target64 = torch.as_tensor(target).detach().reshape(-1).to(device="cpu", dtype=torch.float64)
+    if H64.ndim != 2 or H64.shape[0] != target64.shape[0] or H64.shape[0] == 0:
+        raise ValueError("QUBO requires aligned, non-empty features and targets")
+    if not torch.isfinite(H64).all() or not torch.isfinite(target64).all():
+        raise ValueError("QUBO requires finite features and targets")
+    if not np.isfinite(alpha) or alpha <= 0:
+        raise ValueError("QUBO alpha must be finite and positive")
 
-    H_centered = (
-        H - H.mean(
-            dim=0,
-            keepdim=True
-        )
-    )
+    H_centered = H64 - H64.mean(dim=0, keepdim=True)
+    target_centered = target64 - target64.mean()
+    gram = H_centered.T @ H_centered
+    quadratic = (float(alpha) ** 2) * gram
+    linear = -2.0 * float(alpha) * (H_centered.T @ target_centered)
 
-    target_centered = (
-        target - target.mean()
-    )
-
-    gram = (
-        H_centered.T
-        @ H_centered
-    )
-
-    quadratic = (
-        alpha ** 2
-        * gram
-    )
-
-    linear = (
-        -2.0
-        * alpha
-        * (
-            H_centered.T
-            @ target_centered
-        )
-    )
-
-    hidden_size = H.shape[1]
-
-    h = {}
-
+    hidden_size = H64.shape[1]
+    h = {i: float(linear[i].item()) for i in range(hidden_size)}
     J = {}
-
-    for i in range(hidden_size):
-        h[i] = float(
-            linear[i].item()
-        )
-
     for i in range(hidden_size):
         for j in range(i + 1, hidden_size):
-            coefficient = (
-                2.0
-                * quadratic[i, j]
-            ).item()
-
+            coefficient = 2.0 * float(quadratic[i, j].item())
             if abs(coefficient) > 1e-12:
-                J[(i, j)] = float(
-                    coefficient
-                )
-
+                J[(i, j)] = coefficient
     return h, J
 
 
-def optimize_binary_class(
+def optimize_binary_class(H, target, alpha, num_reads, seed):
+    """Return the lowest-energy binary {-1,+1} weight vector from one solve."""
+    h, J = build_ising_model(H, target, alpha)
+    response = neal.SimulatedAnnealingSampler().sample_ising(
+        h, J, num_reads=int(num_reads), seed=int(seed)
+    )
+    sample = response.first.sample
+    return torch.tensor(
+        [1.0 if sample[i] == 1 else -1.0 for i in range(H.shape[1])],
+        dtype=torch.float32,
+    )
+
+
+def sample_binary_candidates(
     H,
     target,
-    alpha,
+    base_alpha,
     num_reads,
-    seed
+    seed,
+    alpha_multipliers=QUBO_ALPHA_MULTIPLIERS,
+    top_k=QUBO_TOP_CANDIDATES_PER_SCALE,
 ):
-    h, J = build_ising_model(
-        H,
-        target,
-        alpha
-    )
+    """Collect distinct low-energy weight candidates across the alpha sweep."""
+    H_cpu = torch.as_tensor(H).detach().to(device="cpu", dtype=torch.float32)
+    target_cpu = torch.as_tensor(target).detach().reshape(-1).to(device="cpu", dtype=torch.float32)
+    if top_k < 1 or num_reads < 1:
+        raise ValueError("top_k and num_reads must be positive")
+    if not alpha_multipliers:
+        raise ValueError("At least one QUBO alpha multiplier is required")
 
-    sampler = (
-        neal.SimulatedAnnealingSampler()
-    )
+    candidates = []
+    seen = set()
+    sampler = neal.SimulatedAnnealingSampler()
+    variable_positions = None
+    hidden_size = H_cpu.shape[1]
 
-    response = sampler.sample_ising(
-        h,
-        J,
-        num_reads=num_reads,
-        seed=seed
-    )
+    for scale_index, multiplier in enumerate(alpha_multipliers):
+        multiplier = float(multiplier)
+        if not np.isfinite(multiplier) or multiplier <= 0:
+            raise ValueError("QUBO alpha multipliers must be finite and positive")
+        alpha = float(base_alpha) * multiplier
+        h, J = build_ising_model(H_cpu, target_cpu, alpha)
+        response = sampler.sample_ising(
+            h,
+            J,
+            num_reads=int(num_reads),
+            seed=int(seed) + 104729 * scale_index,
+        )
+        if variable_positions is None:
+            variable_positions = {variable: i for i, variable in enumerate(response.variables)}
+        energies = np.asarray(response.record.energy, dtype=np.float64)
+        samples = np.asarray(response.record.sample)
+        for index in np.argsort(energies)[: min(int(top_k), len(energies))]:
+            row = samples[index]
+            bits = tuple(
+                1 if int(row[variable_positions[i]]) == 1 else -1
+                for i in range(hidden_size)
+            )
+            if bits in seen:
+                continue
+            seen.add(bits)
+            candidates.append({
+                "weights": torch.tensor(bits, dtype=torch.float32),
+                "alpha": alpha,
+                "alpha_multiplier": multiplier,
+                "energy": float(energies[index]),
+            })
+    if not candidates:
+        raise RuntimeError("QUBO annealing returned no distinct binary candidates")
+    return candidates
 
-    best_sample = response.first.sample
 
-    weights = torch.tensor(
-        [
-            1.0
-            if best_sample[i] == 1
-            else -1.0
-            for i in range(H.shape[1])
-        ],
-        dtype=torch.float32
-    )
-
-    return weights
-
-
-def calculate_alpha(
-    H,
-    labels,
-    lambda_relative=1e-4,
-):
-    """Estimate a QUBO score scale from a stable signed-target Ridge fit.
-
-    The QUBO energy is written for targets in {-1,+1}, so scale calibration
-    uses that same encoding. The shared CPU float64 SVD Ridge solver is more
-    robust than an unregularized float32 multi-output solve on rank-deficient
-    hidden representations.
-    """
+def calculate_alpha(H, labels, lambda_relative=1e-4):
+    """Estimate a finite QUBO score scale by signed-target Ridge regression."""
     H64 = torch.as_tensor(H).detach().to(device="cpu", dtype=torch.float64)
     labels64 = torch.as_tensor(labels).detach().reshape(-1).to(
         device="cpu", dtype=torch.float64
@@ -158,7 +152,7 @@ def calculate_alpha(
         raise
     alpha = torch.linalg.vector_norm(coefficients) / (H64.shape[1] ** 0.5)
     alpha_value = float(alpha.item())
-    if not torch.isfinite(alpha) or alpha_value <= 1e-8:
+    if not np.isfinite(alpha_value) or alpha_value <= 1e-8:
         raise ValueError(
             "QUBO scale calibration is degenerate (alpha is zero or near zero). "
             "Inspect the saved representation for collapsed or non-informative hidden features."
@@ -166,170 +160,102 @@ def calculate_alpha(
     return alpha_value
 
 
-def recover_bias(
-    H,
-    target,
-    weights,
-    alpha
-):
+def recover_bias(H, target, weights, alpha):
     return (
         target.mean()
-        - alpha
-        * (
-            H.mean(dim=0)
-            @ weights
-        )
+        - alpha * (H.mean(dim=0) @ weights)
     ).item()
 
 
-def train_qubo(
-    representation_path,
-    seed
-):
+def train_qubo(representation_path, seed):
     set_seed(seed)
-
-    data = load_representation(
-        representation_path
+    data = load_representation(representation_path)
+    H_train, H_val, H_test, transform = standardize_hidden_features(
+        data["H_train"], data["H_val"], data["H_test"]
     )
+    y_train = torch.as_tensor(data["y_train"]).float().reshape(-1)
+    y_val = torch.as_tensor(data["y_val"]).float().reshape(-1)
+    y_test = torch.as_tensor(data["y_test"]).float().reshape(-1)
+    target_train = 2.0 * y_train - 1.0
 
-    H_train = data["H_train"].float()
-    H_val = data["H_val"].float()
-    H_test = data["H_test"].float()
-
-    y_train = data["y_train"].float()
-    y_val = data["y_val"].float()
-    y_test = data["y_test"].float()
-
-    target_train = (
-        y_train * 2.0
-        - 1.0
-    )
-
-    alpha = calculate_alpha(
-        H_train,
-        y_train
-    )
-
-    weights = optimize_binary_class(
+    base_alpha = calculate_alpha(H_train, y_train)
+    candidates = sample_binary_candidates(
         H=H_train,
         target=target_train,
-        alpha=alpha,
+        base_alpha=base_alpha,
         num_reads=QUBO_NUM_READS,
-        seed=seed
+        seed=seed,
     )
 
-    bias = recover_bias(
-        H_train,
-        target_train,
-        weights,
-        alpha
-    )
-
-    val_scores = (
-        alpha
-        * (
-            H_val @ weights
+    best = None
+    for candidate in candidates:
+        weights = candidate["weights"]
+        alpha = candidate["alpha"]
+        bias = recover_bias(H_train, target_train, weights, alpha)
+        val_scores = alpha * (H_val @ weights) + bias
+        threshold, val_ba = find_best_threshold(y_val.numpy(), val_scores.numpy())
+        val_metrics = calculate_metrics(y_val.numpy(), val_scores.numpy(), threshold)
+        # Balanced accuracy is the primary operating-point objective; ranking
+        # metrics break ties to discourage validation choices with poor ranking.
+        key = (
+            float(val_ba),
+            float(val_metrics["pr_auc"]),
+            float(val_metrics["roc_auc"]),
+            -float(candidate["energy"]),
         )
-        + bias
-    )
+        if best is None or key > best["selection_key"]:
+            best = {
+                "selection_key": key,
+                "candidate": candidate,
+                "weights": weights,
+                "alpha": alpha,
+                "bias": float(bias),
+                "threshold": float(threshold),
+                "validation_balanced_accuracy": float(val_ba),
+                "validation_pr_auc": float(val_metrics["pr_auc"]),
+                "validation_roc_auc": float(val_metrics["roc_auc"]),
+            }
 
-    threshold, val_ba = find_best_threshold(
-        y_val.numpy(),
-        val_scores.numpy()
-    )
-
-    test_scores = (
-        alpha
-        * (
-            H_test @ weights
-        )
-        + bias
-    )
-
-    metrics = calculate_metrics(
-        y_test.numpy(),
-        test_scores.numpy(),
-        threshold
-    )
-
+    test_scores = best["alpha"] * (H_test @ best["weights"]) + best["bias"]
+    metrics = calculate_metrics(y_test.numpy(), test_scores.numpy(), best["threshold"])
     return {
         "method": "QUBO Binary",
-        "seed": int(data["seed"]),
-        "head_seed": seed,
-        "threshold": threshold,
-        "validation_balanced_accuracy": val_ba,
-        "binary_weights": weights.numpy(),
-        "alpha": float(alpha),
-        "bias": float(bias),
-        "qubo_num_reads": QUBO_NUM_READS,
-        **metrics
+        "seed": int(data.get("training_seed", data.get("seed", seed))),
+        "head_seed": int(seed),
+        "threshold": best["threshold"],
+        "validation_balanced_accuracy": best["validation_balanced_accuracy"],
+        "validation_pr_auc": best["validation_pr_auc"],
+        "validation_roc_auc": best["validation_roc_auc"],
+        "binary_weights": best["weights"].numpy(),
+        "alpha": float(best["alpha"]),
+        "base_alpha": float(base_alpha),
+        "alpha_multiplier": float(best["candidate"]["alpha_multiplier"]),
+        "bias": float(best["bias"]),
+        "qubo_num_reads_per_scale": QUBO_NUM_READS,
+        "qubo_alpha_multipliers": list(QUBO_ALPHA_MULTIPLIERS),
+        "qubo_candidate_count": len(candidates),
+        "qubo_energy": float(best["candidate"]["energy"]),
+        "hidden_feature_transform": transform["transform"],
+        "standardized_constant_units": transform["constant_units"],
+        **metrics,
     }
 
 
 if __name__ == "__main__":
-    seed = 42
-
+    import argparse
     from utils.stroke_data import DATA_DIR
-    representation_path = DATA_DIR / f"stroke_dfa_representation_seed_{seed}.pt"
 
-    result = train_qubo(
-        representation_path,
-        seed
-    )
-
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--representation", type=Path, default=DATA_DIR / "stroke_dfa_representation_seed_42.pt")
+    parser.add_argument("--seed", type=int, default=42)
+    args = parser.parse_args()
+    result = train_qubo(args.representation, args.seed)
     print("\nQUBO Binary")
-
-    print(
-        f"Validation BA: "
-        f"{result['validation_balanced_accuracy'] * 100:.4f}%"
-    )
-
-    print(
-        f"Test BA: "
-        f"{result['balanced_accuracy'] * 100:.4f}%"
-    )
-
-    print(
-        f"Precision: "
-        f"{result['precision'] * 100:.4f}%"
-    )
-
-    print(
-        f"Recall: "
-        f"{result['recall'] * 100:.4f}%"
-    )
-
-    print(
-        f"F1: "
-        f"{result['f1'] * 100:.4f}%"
-    )
-
-    print(
-        f"ROC-AUC: "
-        f"{result['roc_auc'] * 100:.4f}%"
-    )
-
-    print(
-        f"PR-AUC: "
-        f"{result['pr_auc'] * 100:.4f}%"
-    )
-
-    print(
-        f"Threshold: "
-        f"{result['threshold']:.6f}"
-    )
-
-    print(
-        f"Alpha: "
-        f"{result['alpha']:.6f}"
-    )
-
-    print(
-        f"Bias: "
-        f"{result['bias']:.6f}"
-    )
-
-    print(
-        f"QUBO reads: "
-        f"{result['qubo_num_reads']}"
-    )
+    print(f"Validation BA: {result['validation_balanced_accuracy'] * 100:.4f}%")
+    print(f"Test BA: {result['balanced_accuracy'] * 100:.4f}%")
+    print(f"F1: {result['f1'] * 100:.4f}%")
+    print(f"ROC-AUC: {result['roc_auc'] * 100:.4f}%")
+    print(f"PR-AUC: {result['pr_auc'] * 100:.4f}%")
+    print(f"Base alpha: {result['base_alpha']:.6f}")
+    print(f"Selected alpha: {result['alpha']:.6f} (multiplier {result['alpha_multiplier']})")
+    print(f"Candidates: {result['qubo_candidate_count']}")
