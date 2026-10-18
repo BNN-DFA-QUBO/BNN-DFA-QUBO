@@ -321,6 +321,35 @@ class StrokePreprocessingTests(unittest.TestCase):
         self.assertLess(abs(float(latent[3])), abs(float(latent[1])))
         self.assertTrue(torch.all(latent.abs() < 0.21))
 
+    def test_ste_training_can_flip_low_confidence_binary_signs(self):
+        from experiments.stroke_experiments import stroke_dfa_ste_binary as ste
+
+        torch.manual_seed(8)
+        y_train = torch.tensor([0.0, 1.0] * 80)
+        H_train = torch.randn(160, 8)
+        H_train[:, 0] += y_train * 1.4
+        y_val = torch.tensor([0.0, 1.0] * 40)
+        H_val = torch.randn(80, 8)
+        H_val[:, 0] += y_val * 1.4
+
+        mean = H_train.mean(dim=0)
+        scale = H_train.std(dim=0, unbiased=False)
+        H_train = (H_train - mean) / scale
+        H_val = (H_val - mean) / scale
+
+        with patch.object(ste, "STE_EPOCHS", 200), \
+             patch.object(ste, "STE_LEARNING_RATE", 0.01), \
+             patch.object(ste, "STE_PATIENCE", 25), \
+             patch.object(ste, "STE_MIN_DELTA", 1e-4):
+            result = ste._fit_candidate(
+                H_train, y_train, H_val, y_val, seed=19, initialization="class_mean"
+            )
+
+        # Confidence-weighted starts must let the STE move at least one sign.
+        # Check final movement separately from best-checkpoint selection: the
+        # best validation candidate may legitimately still be the epoch-zero baseline.
+        self.assertGreater(result["final_weight_flips_from_initial"], 0)
+
     def test_ste_preserves_epoch_zero_baseline_when_updates_do_not_help(self):
         from experiments.stroke_experiments import stroke_dfa_ste_binary as ste
 
