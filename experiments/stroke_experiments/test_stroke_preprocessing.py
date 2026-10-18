@@ -63,14 +63,24 @@ class StrokePreprocessingTests(unittest.TestCase):
         df = self.sample().iloc[:320].copy()
         pre = StrokePreprocessor().fit(df)
         transformed = pre.transform(df.iloc[[1, 2, 3]])
-        self.assertEqual(pre.feature_names[:12], ["gender", "age", "hypertension", "heart_disease", "ever_married", "Residence_type",
-                                                   "avg_glucose_level", "bmi", "cardio_comorbidity_index", "age_glucose_interaction",
-                                                   "glucose_risk_tier", "metabolic_syndrome_flag"])
-        self.assertEqual(len(pre.feature_names), 23)
+        self.assertEqual(pre.feature_names[:8], [
+            "gender", "hypertension", "heart_disease", "ever_married",
+            "Residence_type", "cardio_comorbidity_index",
+            "glucose_risk_tier", "metabolic_syndrome_flag",
+        ])
+        self.assertEqual(len(pre.feature_names), 20)
         self.assertIn("work_type_Govt_job", transformed.columns)
         self.assertIn("smoking_never smoked", transformed.columns)
-        row = df.iloc[1]
-        self.assertAlmostEqual(transformed.iloc[0]["age_glucose_interaction"], row.age * row.avg_glucose_level, delta=1e-5)
+        self.assertNotIn("age_glucose_interaction", transformed.columns)
+        self.assertNotIn("age", transformed.columns)
+        scaled_columns = [
+            "age_normalized", "avg_glucose_level_normalized",
+            "bmi_normalized", "age_glucose_interaction_normalized",
+        ]
+        self.assertTrue(set(scaled_columns).issubset(transformed.columns))
+        scaled_values = transformed[scaled_columns].to_numpy()
+        self.assertTrue(np.isfinite(scaled_values).all())
+        self.assertLess(float(np.abs(scaled_values).max()), 10.0)
         self.assertEqual(transformed.iloc[0]["glucose_risk_tier"], 0)
         child = df.iloc[[2]].copy()
         never = df.iloc[[0]].copy()
@@ -241,7 +251,7 @@ class StrokePreprocessingTests(unittest.TestCase):
             return torch.tensor(rng.normal(size=(len(labels), 6)) + signal, dtype=torch.float32)
         metadata = {
             "preprocessing_version": PREPROCESSING_VERSION, "dataset_sha256": "c" * 64, "split_seed": 11,
-            "preprocessing_config_hash": "d" * 64, "input_size": 23, "feature_names": [f"x{i}" for i in range(23)],
+            "preprocessing_config_hash": "d" * 64, "input_size": 20, "feature_names": [f"x{i}" for i in range(20)],
             "balancing_method": "random_oversample", "original_train_class_counts": {"0": 24, "1": 24},
             "resampled_train_class_counts": {"0": 24, "1": 24}, "validation_class_counts": {"0": 10, "1": 10},
             "test_class_counts": {"0": 10, "1": 10}, "resampled_train_row_ids": list(range(48)),
@@ -270,7 +280,7 @@ class StrokePreprocessingTests(unittest.TestCase):
         rng = np.random.default_rng(21)
         def split(n):
             labels = pd.Series([0, 1] * (n // 2), dtype=int)
-            values = rng.normal(size=(n, 23)).astype(np.float32)
+            values = rng.normal(size=(n, 20)).astype(np.float32)
             values[:, 0] += labels.to_numpy() * .25
             return pd.DataFrame(values), labels
         X_train, y_train = split(80)
