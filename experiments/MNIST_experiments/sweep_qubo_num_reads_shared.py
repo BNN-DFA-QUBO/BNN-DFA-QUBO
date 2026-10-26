@@ -41,10 +41,11 @@ def main():
     parser.add_argument("--seeds", type=int, nargs="+", default=[42, 123, 999])
     parser.add_argument("--epochs", type=int, default=16)
     parser.add_argument("--reads", type=int, nargs="+", default=[25, 50, 100, 200])
+    parser.add_argument("--num-sweeps", type=int, default=1000)
     parser.add_argument("--batch-size", type=int, default=64)
     args = parser.parse_args()
-    if args.epochs < 1 or args.batch_size < 1 or any(read < 1 for read in args.reads):
-        parser.error("--epochs, --batch-size, and all --reads values must be positive")
+    if args.epochs < 1 or args.batch_size < 1 or args.num_sweeps < 1 or any(read < 1 for read in args.reads):
+        parser.error("--epochs, --batch-size, --num-sweeps, and all --reads values must be positive")
 
     device = torch.device(
         "mps" if torch.backends.mps.is_available()
@@ -88,6 +89,7 @@ def main():
                 num_classes=10,
                 num_reads=read_count,
                 seed=seed,
+                num_sweeps=args.num_sweeps,
             )
             optimization_seconds = time.perf_counter() - start
 
@@ -106,17 +108,18 @@ def main():
                 "epochs": args.epochs,
                 "batch_size": args.batch_size,
                 "num_reads": read_count,
+                "num_sweeps": args.num_sweeps,
                 "train_accuracy": train_accuracy,
                 "test_accuracy": test_accuracy,
                 "qubo_optimization_seconds": optimization_seconds,
                 "configuration": (
                     "BNN+DFA hidden_size=128 output_size=10 Adam lr=0.001; "
                     f"Ridge-LS scale lambda_relative={lambda_relative}; "
-                    "signed {-1,+1} targets; simulated annealing defaults"
+                    f"signed {{-1,+1}} targets; num_sweeps={args.num_sweeps}"
                 ),
             })
             print(
-                f"Seed {seed} | reads={read_count} | train={train_accuracy:.2f}% | "
+                f"Seed {seed} | reads={read_count} | sweeps={args.num_sweeps} | train={train_accuracy:.2f}% | "
                 f"test={test_accuracy:.2f}% | QUBO={optimization_seconds:.3f}s"
             )
 
@@ -138,7 +141,7 @@ def main():
             "epochs": args.epochs,
             "batch_size": args.batch_size,
             "seeds": " ".join(map(str, args.seeds)),
-            "configuration": f"Ridge-LS scale lambda_relative={lambda_relative}; BNN+DFA lr=0.001; simulated annealing defaults",
+            "configuration": f"Ridge-LS scale lambda_relative={lambda_relative}; BNN+DFA lr=0.001; num_sweeps={args.num_sweeps}",
         })
 
     output_dir = Path("data/results_diagnostic")
@@ -148,12 +151,12 @@ def main():
     aggregate_path = output_dir / f"sweep_qubo_num_reads_shared_aggregate_{timestamp}.csv"
     write_csv_exclusive(
         detailed_path,
-        ["seed", "epochs", "batch_size", "num_reads", "train_accuracy", "test_accuracy", "qubo_optimization_seconds", "configuration"],
+        ["seed", "epochs", "batch_size", "num_reads", "num_sweeps", "train_accuracy", "test_accuracy", "qubo_optimization_seconds", "configuration"],
         detailed_rows,
     )
     write_csv_exclusive(
         aggregate_path,
-        ["num_reads", "seed_count", "mean_test_accuracy", "sample_std_test_accuracy", "mean_qubo_optimization_seconds", "sample_std_qubo_optimization_seconds", "epochs", "batch_size", "seeds", "configuration"],
+        ["num_reads", "num_sweeps", "seed_count", "mean_test_accuracy", "sample_std_test_accuracy", "mean_qubo_optimization_seconds", "sample_std_qubo_optimization_seconds", "epochs", "batch_size", "seeds", "configuration"],
         aggregate_rows,
     )
     print(f"\nDetailed results saved to: {detailed_path.resolve()}")
