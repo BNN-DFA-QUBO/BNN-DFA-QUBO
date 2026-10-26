@@ -1,0 +1,87 @@
+name: XAI full-project validation bundle
+
+on:
+  push:
+    branches: [xai-full-integration-2026-10]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate-and-bundle:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - name: Check out full project
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            requirements-xai.txt
+
+      - name: Install existing project dependencies
+        continue-on-error: true
+        id: deps
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt pytest
+
+      - name: Compile all existing and new Python source
+        continue-on-error: true
+        id: compile
+        run: python -m compileall -q models utils experiments reproducibility tests
+
+      - name: Run existing regression tests
+        continue-on-error: true
+        id: tests
+        run: python -m pytest tests -q
+
+      - name: Package tracked project files
+        if: always()
+        run: |
+          python - <<'PY'
+          import os, zipfile
+          from pathlib import Path
+          root = Path('.').resolve()
+          out = root.parent / 'BNN-DFA-QUBO-source.zip'
+          excluded = {'.git', '.venv', 'venv', '__pycache__', '.pytest_cache', '.mypy_cache'}
+          with zipfile.ZipFile(out, 'w', zipfile.ZIP_DEFLATED, compresslevel=6) as z:
+              for p in root.rglob('*'):
+                  if not p.is_file():
+                      continue
+                  rel = p.relative_to(root)
+                  if any(part in excluded for part in rel.parts):
+                      continue
+                  if rel.parts and rel.parts[0] in {'data', 'outputs', 'checkpoints'}:
+                      continue
+                  if p.suffix in {'.pyc', '.pyo'} or p.name == '.DS_Store':
+                      continue
+                  z.write(p, Path('BNN-DFA-QUBO') / rel)
+          print(f'Bundle size: {out.stat().st_size} bytes')
+          PY
+
+      - name: Upload project bundle and test log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: bnn-dfa-qubo-source-bundle
+          path: |
+            ../BNN-DFA-QUBO-source.zip
+          if-no-files-found: error
+          retention-days: 3
+
+      - name: Summarize validation result
+        if: always()
+        run: |
+          {
+            echo '## Validation status'
+            echo '- Dependency installation: ${{ steps.deps.outcome }}'
+            echo '- Compile check: ${{ steps.compile.outcome }}'
+            echo '- Existing tests: ${{ steps.tests.outcome }}'
+          } >> "$GITHUB_STEP_SUMMARY"
