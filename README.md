@@ -179,6 +179,43 @@ The repository provides several experiment runners and validation scripts in `ex
 - `sweep_qubo_num_reads_shared.py`: Evaluates the impact of different QUBO read counts (`--reads 25 50 100 200`) across seeds on shared frozen features. Saves detailed and aggregate CSVs to `data/results_diagnostic/`.
 - `results_utils.py`: Central helper managing schema upgrades and thread-safe writes to `data/results/mnist_results.csv` (redirectable via `$env:BNN_DFA_RESULTS_CSV`).
 
+#### Computational-Cost Analysis and Timing Definitions
+
+The shared-validation runner (`run_mnist_shared_validation.py`) measures the backbone, feature extraction, and each classifier head separately, providing transparent cost accounting across cached and fresh runs:
+
+- **Backbone and Feature Extraction Costs:**
+  - `backbone_training_time_sec`: Time in seconds spent training the BNN+DFA backbone (16 epochs). If the representation artifact is freshly trained (`representation_cache_status == "trained"`), this records the current run's measured training duration. If the artifact is reused from cache (`"reused"`), this field is `0.0` for current-run work, while the historical backbone training time remains preserved in the representation artifact metadata (`training_seconds`).
+  - `feature_extraction_time_sec`: Time in seconds spent running forward passes through the frozen first layer ($784 	o 128$) to extract ReLU activations for train ($51{,}000$), validation ($9{,}000$), and test ($10{,}000$) partitions. When loading a cached artifact, extraction is bypassed and `0.0` is recorded for the current run.
+  - `representation_cache_status`: Explicitly marks whether the feature representation was newly `"trained"` or `"reused"` from disk cache.
+
+- **Per-Head Fitting Time (`head_fit_time_sec`):**
+  Monotonically times (`time.perf_counter()`) only the fitting or optimization operations of each classifier head on CPU/GPU (with appropriate CUDA synchronization where applicable). **Excludes** test set scoring, validation set final evaluations, or diagnostic logging:
+  - **Ridge LS:** SVD-based linear solve with float64 augmented system and unpenalized intercept on training features ($H_{	ext{train}}$).
+  - **Binarized Ridge LS:** Feature weight sign binarization plus closed-form training-only scale and bias refitting.
+  - **QUBO Binary:** The complete QUBO search and tuning loop across all 27 candidate configurations (simulated annealing on training Ising objectives, candidate bias recovery, and validation accuracy evaluation) plus final scale/bias fitting. For fixed-QUBO mode, times annealing of the single fixed read count and scale/bias refit.
+  - **STE Binary:** Full straight-through estimator training loop (50 Adam epochs on $H_{	ext{train}}$) including validation-based best-epoch checkpoint selection.
+
+- **Total Computational Cost Semantics:**
+  - `current_run_total_time_sec`: Total wall-clock time of work actually executed during the current run:
+    `current_run_total_time_sec = current_backbone_time + current_extraction_time + head_fit_time_sec`
+    For cached representation runs, `current_backbone_time` and `current_extraction_time` are genuinely `0.0`, strictly isolating current-run head optimization without falsely attributing past backbone training to the current invocation.
+  - `end_to_end_training_time_sec`: Component-based total pipeline cost estimate:
+    `end_to_end_training_time_sec = artifact_training_time + artifact_extraction_time + head_fit_time_sec`
+    Provides the full estimated lifecycle cost of training the feature extractor plus fitting the head.
+    *Missing timing handling:* If historical backbone training or feature extraction durations are missing/unavailable in a loaded representation artifact, `end_to_end_training_time_sec` is recorded as blank/empty string (`""`) rather than silently substituting `0.0`, and the missing state is audited in `pipeline_timing_status`.
+  - `pipeline_timing_status`: Audit field indicating whether all historical pipeline components were recorded (`"complete"`, `"missing_extraction_time"`, or `"missing_backbone_and_extraction_time"`).
+  - Legacy CSV fields (`training_time_sec` and `parameter_count`):
+    - `training_time_sec`: In the canonical results CSV, historical runs recorded backbone training loop time. For shared-validation rows, `training_time_sec` records current-run backbone training time (`0.0` when reused from cache, preserving compatibility with timing aggregation scripts).
+    - `parameter_count`: Retains legacy total network backbone count (101,770) for compatibility with historical reporting tools, while `backbone_parameter_count`, `head_parameter_count`, and `total_parameter_count` provide the unbundled breakdown.
+- **Parameter Counts:**
+  - `backbone_parameter_count`: Always $101{,}770$ for the standard $784 	o 128 	o 10$ network ($784 	imes 128 + 128 = 100{,}480$ in layer 1; $128 	imes 10 + 10 = 1{,}290$ in layer 2).
+  - `head_parameter_count`:
+    - *Ridge LS:* $1{,}290$ ($128 	imes 10$ float weights $+ 10$ unpenalized intercepts).
+    - *Binarized Ridge LS:* $1{,}300$ ($128 	imes 10 = 1{,}280$ binary weights $\{-1, +1\} + 10$ positive class scales $+ 10$ class biases).
+    - *QUBO Binary:* $1{,}300$ ($128 	imes 10 = 1{,}280$ binary spin variables $\{-1, +1\} + 10$ continuous class scales $+ 10$ continuous biases).
+    - *STE Binary:* $1{,}290$ deployed parameters ($128 	imes 10 = 1{,}280$ binary weights $+ 10$ learned scalar biases; optimizer-only latent momentum states are excluded from deployed parameter counts).
+  - `total_parameter_count`: $	ext{backbone\_parameter\_count} + 	ext{head\_parameter\_count}$ ($103{,}060$ for Ridge LS and STE; $103{,}070$ for Binarized Ridge LS and QUBO Binary).
+
 #### Protocol and integrity notes
 
 - The individual MNIST scripts are independent end-to-end runs; `run_mnist_shared_validation.py` is a head-only comparison on one frozen, split-aligned representation per seed. Stroke `run_stroke_controlled.py` trains one shared representation per model seed and compares heads; `stroke_binary_head_multiseed.py` varies head seeds on a fixed representation. Do not combine these protocols in one mean or claim a shared seed proves identical features.

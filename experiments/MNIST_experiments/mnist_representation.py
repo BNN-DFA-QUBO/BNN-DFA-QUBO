@@ -74,19 +74,32 @@ def load_or_train_mnist_representation(
     model = BNN().to(device)
     dfa = DFAClassifier(hidden_size=128, output_size=10, device=device)
     optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
+    dev = torch.device(device)
+    if dev.type == "cuda":
+        torch.cuda.synchronize(dev)
     started = time.perf_counter()
     for epoch in range(epochs):
         loss, accuracy = train_dfa(model, train_loader, optimizer, dfa, device)
         print(f"Backbone epoch {epoch + 1}/{epochs}: loss={loss:.4f}, train_acc={accuracy:.2f}%")
+    if dev.type == "cuda":
+        torch.cuda.synchronize(dev)
     training_seconds = time.perf_counter() - started
 
+    if dev.type == "cuda":
+        torch.cuda.synchronize(dev)
+    extraction_started = time.perf_counter()
     representations = {}
     for split, loader in (("train", train_eval_loader), ("validation", validation_loader),
                           ("test", test_loader)):
         features, labels = collect_hidden_features(model, loader, device)
         representations[f"H_{split}"] = features.detach().cpu().float().contiguous()
         representations[f"y_{split}"] = labels.detach().cpu().long().contiguous()
+    if dev.type == "cuda":
+        torch.cuda.synchronize(dev)
+    extraction_seconds = time.perf_counter() - extraction_started
+
     representations["training_seconds"] = training_seconds
+    representations["feature_extraction_seconds"] = extraction_seconds
     try:
         save_representation(path, representations, metadata)
     except FileExistsError:
