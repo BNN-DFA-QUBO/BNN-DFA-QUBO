@@ -60,76 +60,255 @@ The MNIST data loader downloads MNIST the first time it is used. The Stroke pipe
 
 ## 2. MNIST experiments
 
-### Run individual models
+### 2.1 Overview of the Paper's MNIST Experiments
 
-Run each command from the repository root:
+The paper (*"Improving Direct Feedback Alignment in Binarized Neural Networks using QUBO Optimization of the Binary Classifier Head"*) evaluates eight distinct methods on the 10-class MNIST digit dataset (784 -> 128 -> 10):
+1. **Three end-to-end baselines:** Standard full-precision ANN, BNN trained with Backpropagation (BP), and native BNN trained with Direct Feedback Alignment (DFA).
+2. **Five classifier head procedures:** Real Least Squares (Real LS), Binarized Least Squares (Binarized LS), Direct Binary, Straight-Through Estimator Binary (STE Binary), and QUBO Binary.
 
+> [!IMPORTANT]
+> **Independent Backbones vs. Shared Representations:**
+> In the paper's primary MNIST protocol (Section III-A, IV-B, and Tables III & IV), **each classifier head script independently trains its own BNN-DFA backbone** from scratch on all 60,000 MNIST training images. Therefore, running individual head scripts does **not** evaluate heads on a shared, frozen representation and does not isolate the effect of head optimization alone.
+>
+> To isolate classifier head performance on an identical feature extractor, the repository also implements a **shared-representation validation protocol** (`run_mnist_shared_validation.py`), which trains one BNN-DFA backbone per seed, splits the training set into 51,000 train and 9,000 validation images, freezes the hidden features, and compares heads under identical representations. These two protocols must not be confused or silently combined.
+
+---
+
+### 2.2 The Eight Individual MNIST Methods
+
+The table below maps all eight methods reported in the paper to their exact implementation scripts in `experiments/MNIST_experiments/`, verified PowerShell commands, purposes, output locations, and backbone training modes:
+
+| Method in Paper | Exact Python Script | Exact Verified PowerShell Command | Purpose & Description | Main Outputs & Locations | Backbone Training Mode |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| **Standard ANN** | `experiments/MNIST_experiments/baseline_ann.py` | `.\.venv\Scripts\python.exe -m experiments.MNIST_experiments.baseline_ann --seed 42` | End-to-end full-precision feedforward baseline (784 -> 128 -> 10) trained with backpropagation and cross-entropy loss. | Appends run metrics (accuracy, loss, training time, parameter count) to `data/results/mnist_results.csv` (or `$env:BNN_DFA_RESULTS_CSV`). | Trains its own ANN network |
+| **BNN with Backpropagation** | `experiments/MNIST_experiments/bnn_bp.py` | `.\.venv\Scripts\python.exe -m experiments.MNIST_experiments.bnn_bp --seed 42` | End-to-end binary neural network (784 -> 128 -> 10) with scaled binary forward weights {-alpha, +alpha} and STE backpropagation. | Appends run metrics to `data/results/mnist_results.csv` (or `$env:BNN_DFA_RESULTS_CSV`). | Trains its own BNN network via BP |
+| **BNN with Direct Feedback Alignment (DFA)** | `experiments/MNIST_experiments/bnn_dfa.py` | `.\.venv\Scripts\python.exe -m experiments.MNIST_experiments.bnn_dfa --seed 42` | End-to-end BNN trained with Direct Feedback Alignment using a fixed random projection matrix B in R^(10x128) instead of transpose weights. | Appends run metrics to `data/results/mnist_results.csv` (or `$env:BNN_DFA_RESULTS_CSV`). | Trains its own BNN network via DFA |
+| **DFA + Real-Valued Least-Squares Head** | `experiments/MNIST_experiments/dfa_least_squares.py` | `.\.venv\Scripts\python.exe -m experiments.MNIST_experiments.dfa_least_squares --seed 42 --ls-solver legacy` *(paper)*<br>`.\.venv\Scripts\python.exe -m experiments.MNIST_experiments.dfa_least_squares --seed 42` *(Ridge default)* | Trains a BNN-DFA backbone, extracts 128-dim ReLU hidden features H in R^(60000x128), augments with bias column [H, 1], and fits continuous weights to one-hot {0, 1} targets. | Appends run metrics to `data/results/mnist_results.csv` (or `$env:BNN_DFA_RESULTS_CSV`). | Retrains its own BNN-DFA backbone |
+| **DFA + Binarized Least-Squares Head** | `experiments/MNIST_experiments/dfa_binary_head.py` | `.\.venv\Scripts\python.exe -m experiments.MNIST_experiments.dfa_binary_head --seed 42 --ls-solver legacy` *(paper)*<br>`.\.venv\Scripts\python.exe -m experiments.MNIST_experiments.dfa_binary_head --seed 42` *(Ridge default)* | Fits an initial continuous least-squares head on its trained BNN-DFA features, takes weight signs sign(W), and fits a class-specific positive scale through the origin while retaining the real LS bias. | Appends run metrics to `data/results/mnist_results.csv` (or `$env:BNN_DFA_RESULTS_CSV`). | Retrains its own BNN-DFA backbone |
+| **DFA + Direct Binary Head** | `experiments/MNIST_experiments/dfa_direct_binary_head.py` | `.\.venv\Scripts\python.exe -m experiments.MNIST_experiments.dfa_direct_binary_head --seed 42` | Trains a tanh-relaxed latent weight parameterization W_bin = sign(tanh(W_latent)) on frozen BNN-DFA features for 200 steps with Adam, cross-entropy, and learnable bias. | Appends run metrics to `data/results/mnist_results.csv` (or `$env:BNN_DFA_RESULTS_CSV`). | Retrains its own BNN-DFA backbone |
+| **DFA + STE Binary Head** | `experiments/MNIST_experiments/dfa_binary_head_ste.py` | `.\.venv\Scripts\python.exe -m experiments.MNIST_experiments.dfa_binary_head_ste --seed 42` | Fits a binary classifier head on frozen BNN-DFA features using sign binarization and straight-through estimator gradients for 50 full-batch Adam steps with cross-entropy and learned bias (no scale parameter). | Appends run metrics to `data/results/mnist_results.csv` (or `$env:BNN_DFA_RESULTS_CSV`). | Retrains its own BNN-DFA backbone |
+| **BNN-DFA + QUBO Binary Head** | `experiments/MNIST_experiments/bnn_dfa_qubo.py` | `.\.venv\Scripts\python.exe -m experiments.MNIST_experiments.bnn_dfa_qubo --seed 42 --qubo-scale-solver legacy --num-reads 100` *(paper)*<br>`.\.venv\Scripts\python.exe -m experiments.MNIST_experiments.bnn_dfa_qubo --seed 42` *(Ridge default)* | Formulates one-vs-rest binary classifier optimization as an Ising/QUBO problem over 128 spins per class with {-1, +1} targets. Solves using classical simulated annealing (dwave-neal, 100 reads), then fits continuous scale and bias. | Appends run metrics (including qubo_time_sec) to `data/results/mnist_results.csv` (or `$env:BNN_DFA_RESULTS_CSV`). | Retrains its own BNN-DFA backbone |
+
+> [!NOTE]
+> **Solver Modes (`--ls-solver` / `--qubo-scale-solver`):**
+> - `--ls-solver legacy`: Reproduces the paper's original float32 unregularized `torch.linalg.lstsq` solve.
+> - `--ls-solver ridge` *(default)*: Uses the numerically stabilized float64 SVD Ridge solver with unregularized intercept (`lambda_relative=1e-4`), preventing ill-conditioned inversions.
+> - `--qubo-scale-solver legacy`: Uses the unregularized float32 least-squares fit to initialize the base class scales alpha_k.
+> - `--qubo-scale-solver ridge` *(default)*: Uses the stabilized Ridge solve to initialize alpha_k.
+
+---
+
+### 2.3 Experiment Runners and Diagnostic Scripts
+
+The repository provides several experiment runners and validation scripts in `experiments/MNIST_experiments/`:
+
+#### 1. Multi-Seed Individual Runner: `run_mnist_controlled.py`
+- **Purpose:** Executes individual MNIST experiments across multiple seeds sequentially. Each experiment script retrains its own network and prints its test accuracy.
+- **Command-line Interface:**
+  ```powershell
+  .\.venv\Scripts\python.exe -m experiments.MNIST_experiments.run_mnist_controlled --seeds 42 123 456 789 999 --experiments baseline_ann bnn_bp bnn_dfa dfa_least_squares dfa_binary_head dfa_direct_binary_head dfa_binary_head_ste bnn_dfa_qubo --output data/mnist_controlled_results.csv
+  ```
+- **Arguments:**
+  - `--seeds`: List of integer seeds (default: `42 123 2024 7 99`; for paper reproduction specify: `42 123 456 789 999`).
+  - `--experiments`: Subset or all of `{baseline_ann, bnn_bp, bnn_dfa, dfa_least_squares, dfa_binary_head, dfa_direct_binary_head, dfa_binary_head_ste, bnn_dfa_qubo}`.
+  - `--output`: Output CSV path for raw run results (default: `data/mnist_controlled_results.csv`).
+  - `--summary-output`: Output CSV path for aggregated statistics (mean, std, min, max; default: `<output-stem>_summary.csv` beside raw CSV).
+  - `--overwrite`: Allow replacing existing output files.
+
+#### 2. Shared-Representation Validation Runner: `run_mnist_shared_validation.py`
+- **Purpose:** Compares multiple classifier heads on a **single, shared, frozen BNN-DFA backbone** per seed, with strict validation-based checkpointing and hyperparameter selection.
+- **Protocol:**
+  - Official MNIST training set (N = 60,000) is partitioned into a training partition (N_train = 51,000, 85%) and a stratified validation partition (N_val = 9,000, 15%).
+  - One BNN-DFA backbone is trained for `--epochs` (default: 16) and saved/reused from `data/mnist_representations/`.
+  - Heads compared on identical features H in R^(N x 128):
+    1. **Ridge LS:** Closed-form solve on H_train.
+    2. **Binarized Ridge LS:** Feature signs sign(W_ridge) with scale and bias refit on H_train.
+    3. **QUBO Binary:** Validation-tuned over a 27-configuration grid (or `--fixed-qubo`), with post-annealing scale/bias fit on H_train.
+    4. **STE Binary:** Trained for `--ste-epochs` (default: 50); validation accuracy selects the best training epoch checkpoint.
+  - Official MNIST test set (N_test = 10,000) is evaluated **only once** for final reporting.
+- **Command-line Interface:**
+  ```powershell
+  # Default: 27-configuration validation tuning for QUBO
+  .\.venv\Scripts\python.exe -m experiments.MNIST_experiments.run_mnist_shared_validation --seed 42 --epochs 16
+
+  # Or with historical fixed 100 reads (no validation grid tuning)
+  .\.venv\Scripts\python.exe -m experiments.MNIST_experiments.run_mnist_shared_validation --seed 42 --epochs 16 --fixed-qubo --num-reads 100
+  ```
+- **Outputs Produced:**
+  - Diagnostic comparison table: `data/results_diagnostic/shared_validation_heads_<protocol>_seed_<seed>_<timestamp>.csv`
+  - QUBO tuning log: `data/results_diagnostic/qubo_validation_tuning_27config_seed_<seed>_<timestamp>.csv`
+  - Automatic result append: Automatically appends the selected QUBO head result to `data/results/mnist_results.csv` via `results_utils.append_result`.
+
+#### 3. QUBO Validation-Only Tuning: `tune_qubo_validation.py`
+- **Purpose:** Performs a bounded grid search over QUBO solver hyperparameters using only training representations for optimization and validation representations for candidate selection.
+- **Hyperparameter Grid (27 configurations):**
+  - `num_reads`: `(25, 50, 100)`
+  - `num_sweeps`: `(250, 500, 1000)`
+  - `scale_multiplier`: `(0.5, 1.0, 2.0)`
+  - Deterministic solver seed rule for entry i (0-indexed): `(backbone_seed + 1009 * (i + 1)) mod 2**32`.
+- **Selection & Tie-Breaking Criteria:**
+  Candidates are ranked by:
+  1. Highest validation accuracy
+  2. Fewest `num_reads`
+  3. `scale_multiplier` closest to `1.0`
+  4. Fewest `num_sweeps`
+  5. Lowest `scale_multiplier`
+- **Command-line Interface:**
+  ```powershell
+  .\.venv\Scripts\python.exe -m experiments.MNIST_experiments.tune_qubo_validation --seed 42 --epochs 16
+  ```
+- **Outputs Produced:**
+  - `data/results_diagnostic/qubo_validation_tuning_27config_seed_<seed>_<timestamp>.csv`: Detailed evaluation of all 27 candidate configurations.
+  - `data/results_diagnostic/qubo_validation_tuning_27config_seed_<seed>_<timestamp>.json`: Summary configuration metadata, winner parameters, validation score, and single final test accuracy.
+  - *Note:* Standalone execution of `tune_qubo_validation.py` saves diagnostic files but does not append to `data/results/mnist_results.csv` (use `run_mnist_shared_validation.py` or `bnn_dfa_qubo.py --qubo-tuning` to log to the main results table).
+
+#### 4. Shared Representation Management: `mnist_representation.py` & `utils/MNIST/representation.py`
+- **Purpose:** Caches and verifies frozen BNN-DFA hidden feature activations (H_train in R^(51000x128), H_validation in R^(9000x128), H_test in R^(10000x128)).
+- **Artifact Location:** `data/mnist_representations/mnist_bnn_dfa_seed_<seed>_epochs_<epochs>_val_<val_fraction>.pt`
+- **Validation:** On load, verifies full metadata compatibility (dataset fingerprint SHA-256, stratified split indices, parameter counts, and tensor checksums). If incompatible or corrupt, raises an error; if valid, safely reuses the representation.
+
+#### 5. Additional Shared Diagnostics:
+- `compare_ls_binary_qubo_shared.py`: Compares Ridge LS, Binarized Ridge LS, and QUBO Binary on a single representation (`--seed`, `--epochs`, `--num-reads`, `--fixed-qubo`).
+- `sweep_qubo_num_reads_shared.py`: Evaluates the impact of different QUBO read counts (`--reads 25 50 100 200`) across seeds on shared frozen features. Saves detailed and aggregate CSVs to `data/results_diagnostic/`.
+- `results_utils.py`: Central helper managing schema upgrades and thread-safe writes to `data/results/mnist_results.csv` (redirectable via `$env:BNN_DFA_RESULTS_CSV`).
+
+---
+
+### 2.4 Explaining the Paper's MNIST Tables and Figures
+
+The paper reports MNIST results across five random seeds: `42, 123, 456, 789, 999`.
+
+#### Table III: Mean MNIST Test Accuracy and Timing Across Five Seeds
+- **Content:** Mean +/- standard deviation of test accuracy, mean training time (backbone training loop in seconds), and mean QUBO optimization time for the eight methods.
+- **Underlying Data:** Recorded in `Old_results/mnist_results.csv` (and reproduced in `data/results/mnist_results.csv` if historical experiments are run).
+  - Standard ANN: 97.74 +/- 0.10% (mean train time: 134.76 s)
+  - BNN + Backpropagation: 95.35 +/- 0.62% (mean train time: 141.17 s)
+  - BNN + DFA: 92.69 +/- 1.17% (mean train time: 111.12 s)
+  - BNN + DFA + Real-Valued LS Head: 48.10 +/- 39.62% (mean train time: 108.48 s)
+  - BNN + DFA + Binarized LS Head: 38.30 +/- 28.36% (mean train time: 111.41 s)
+  - BNN + DFA + Direct Binary Head: 70.46 +/- 7.19% (mean train time: 114.68 s)
+  - BNN + DFA + STE Binary Head: 13.68 +/- 3.54% (mean train time: 112.16 s)
+  - BNN + DFA + QUBO: 89.56 +/- 4.19% (mean train time: 106.39 s, mean QUBO time: 3.55 s)
+- **Automated Generation:** Supported via `experiments/MNIST_experiments/collect_results.py`.
+  ```powershell
+  .\.venv\Scripts\python.exe -m experiments.MNIST_experiments.collect_results
+  ```
+  *Outputs:* Generates `data/results/main_classification_results.csv` (mean +/- std) and `data/results/computational_cost_results.csv` from `data/results/mnist_results.csv`.
+
+#### Table IV: MNIST Test Accuracy (%) by Seed
+- **Content:** Per-seed test accuracy across the five seeds (`42, 123, 456, 789, 999`) for all eight methods:
+
+| Seed | ANN | BNN+BP | BNN+DFA | Real LS | Bin. LS | Direct | STE | QUBO |
+| :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
+| **42** | 97.88 | 95.89 | 93.92 | 19.12 | 14.91 | 69.28 | 18.98 | 93.40 |
+| **123** | 97.65 | 95.60 | 91.35 | 29.81 | 34.36 | 74.79 | 13.31 | 93.04 |
+| **456** | 97.77 | 95.56 | 93.65 | 10.10 | 9.80 | 76.68 | 9.22 | 83.27 |
+| **789** | 97.74 | 95.40 | 92.92 | 87.11 | 78.14 | 72.99 | 14.39 | 90.33 |
+| **999** | 97.65 | 94.28 | 91.61 | 94.34 | 54.30 | 58.56 | 12.51 | 87.74 |
+
+- **Underlying Data:** `Old_results/mnist_results.csv` (or `data/results/mnist_results.csv`).
+- **Generation:** Can be inspected by filtering/pivoting `mnist_results.csv`, or generated automatically from a multi-seed controlled run via `plot_mnist_results.py`:
+  ```powershell
+  .\.venv\Scripts\python.exe -m experiments.MNIST_experiments.plot_mnist_results
+  ```
+  *(Outputs `data/mnist_results/test_accuracy_per_seed.png` and `data/mnist_results/mnist_results_summary.csv` from `data/mnist_controlled_results.csv`).*
+
+#### Figure 5: MNIST Test Accuracy Across Five Seeds (Mean +/- SD)
+- **Content:** Bar chart showing test accuracy mean +/- standard deviation error bars across the five seeds for all eight methods.
+- **Automated Generation:** Supported via `experiments/MNIST_experiments/plot_results.py`.
+  ```powershell
+  .\.venv\Scripts\python.exe -m experiments.MNIST_experiments.plot_results
+  ```
+  *Outputs:* Generates `data/results/figures/fig1_main_classification_accuracy.png` (matching Figure 5), `fig2_classifier_head_comparison.png`, `fig3_qubo_comparison.png`, and `fig5_accuracy_vs_training_time.png` directly from `data/results/mnist_results.csv`.
+
+---
+
+### 2.5 Windows PowerShell Quick Start
+
+Follow these verified steps in Windows PowerShell from the repository root:
+
+#### 1. Environment & Installation Check
 ```powershell
-# Standard ANN
-python -m experiments.MNIST_experiments.baseline_ann --seed 42
+# Verify Python executable and version
+.\.venv\Scripts\python.exe -c "import sys; print(sys.executable); print(sys.version)"
 
-# BNN trained with backpropagation
-python -m experiments.MNIST_experiments.bnn_bp --seed 42
+# Verify core dependencies
+.\.venv\Scripts\python.exe -c "import torch, torchvision, numpy, pandas, neal; print('Imports OK, PyTorch:', torch.__version__)"
 
-# BNN trained with Direct Feedback Alignment
-python -m experiments.MNIST_experiments.bnn_dfa --seed 42
-
-# DFA with a real-valued least-squares head
-python -m experiments.MNIST_experiments.dfa_least_squares --seed 42
-
-# DFA with a binarized LS-derived head
-python -m experiments.MNIST_experiments.dfa_binary_head --seed 42
-
-# Direct binary head
-python -m experiments.MNIST_experiments.dfa_direct_binary_head --seed 42
-
-# Straight-through estimator binary head
-python -m experiments.MNIST_experiments.dfa_binary_head_ste --seed 42
-
-# QUBO / Ising binary head
-python -m experiments.MNIST_experiments.bnn_dfa_qubo --seed 42
+# Run existing unit tests for MNIST experiments, schemas, and representation invariants
+.\.venv\Scripts\python.exe -m unittest discover tests
 ```
 
-The main classifier-head scripts currently use the numerically stable Ridge-LS implementation by default on this feature branch. Use the legacy switches when reproducing the original implementation:
-
+#### 2. One-Seed Smoke Test (Isolated Diagnostic Directory)
+To avoid overwriting historical results, redirect output logging using `$env:BNN_DFA_RESULTS_CSV`:
 ```powershell
-# Original float32 torch.linalg.lstsq implementation for real LS
-python -m experiments.MNIST_experiments.dfa_least_squares --seed 42 --ls-solver legacy
-
-# Original LS initializer / bias treatment for the binarized LS head
-python -m experiments.MNIST_experiments.dfa_binary_head --seed 42 --ls-solver legacy
-
-# Original QUBO scale initialization
-python -m experiments.MNIST_experiments.bnn_dfa_qubo --seed 42 --qubo-scale-solver legacy
-```
-
-The Ridge-LS solver uses CPU float64 and an augmented SVD-based least-squares system, leaves the intercept unregularized, and avoids normal equations. The binarized Ridge-LS variant separately refits its class-specific scale and bias after weight sign binarization. Those are algorithmically distinct variants; compare the result labels instead of combining them under one generic LS name.
-
-### Controlled multi-seed MNIST runs
-
-```powershell
+# Set up a timestamped diagnostic output file
 $stamp = Get-Date -Format "yyyyMMdd_HHmmss"
-python -m experiments.MNIST_experiments.run_mnist_controlled --seeds 42 123 456 789 999 --experiments dfa_least_squares dfa_binary_head bnn_dfa_qubo --output "data/results_diagnostic/mnist_controlled_$stamp.csv"
-```
+$env:BNN_DFA_RESULTS_CSV = "data/results_diagnostic/smoke_mnist_$stamp.csv"
 
-This controlled runner produces a per-run CSV and a matching summary CSV beside it. It refuses to replace existing outputs. Use a new `--output` path for each run, or pass `--overwrite` only when replacement is intentional. You can override the summary path with `--summary-output`.
+# Run a quick smoke test for an end-to-end baseline and a head
+.\.venv\Scripts\python.exe -m experiments.MNIST_experiments.baseline_ann --seed 42
+.\.venv\Scripts\python.exe -m experiments.MNIST_experiments.dfa_least_squares --seed 42 --ls-solver legacy
+.\.venv\Scripts\python.exe -m experiments.MNIST_experiments.bnn_dfa_qubo --seed 42 --qubo-scale-solver legacy --num-reads 100
 
-### Keep diagnostic outputs separate
-
-Most individual MNIST scripts append to `data/results/mnist_results.csv`. To send new diagnostic runs to another file, set `BNN_DFA_RESULTS_CSV` before launching the command.
-
-```powershell
-$stamp = Get-Date -Format "yyyyMMdd_HHmmss"
-$env:BNN_DFA_RESULTS_CSV = "data/results_diagnostic/mnist_$stamp.csv"
-
-python -m experiments.MNIST_experiments.dfa_least_squares --seed 42
-python -m experiments.MNIST_experiments.dfa_binary_head --seed 42
-python -m experiments.MNIST_experiments.bnn_dfa_qubo --seed 42
-
+# Remove the redirection variable after the run
 Remove-Item Env:BNN_DFA_RESULTS_CSV
 ```
 
-This environment variable redirects those scripts' result logging. It does not redirect every custom diagnostic or the Stroke runner, which save their outputs separately.
+#### 3. Multi-Seed Reproduction Command (Paper's Five Seeds)
+To run the full eight-method suite across the paper's five seeds (`42 123 456 789 999`) using `run_mnist_controlled.py`:
+```powershell
+$stamp = Get-Date -Format "yyyyMMdd_HHmmss"
+.\.venv\Scripts\python.exe -m experiments.MNIST_experiments.run_mnist_controlled `
+    --seeds 42 123 456 789 999 `
+    --experiments baseline_ann bnn_bp bnn_dfa dfa_least_squares dfa_binary_head dfa_direct_binary_head dfa_binary_head_ste bnn_dfa_qubo `
+    --output "data/results_diagnostic/mnist_paper_runs_$stamp.csv"
+```
+*Note: This command runs 40 training executions (8 methods x 5 seeds) and saves raw and summary CSVs to `data/results_diagnostic/`.*
+
+#### 4. Shared-Representation Validation Comparison
+To train (or reuse) a frozen representation and compare heads with strict validation isolation:
+```powershell
+# Run shared representation comparison on seed 42 with 27-config QUBO tuning
+.\.venv\Scripts\python.exe -m experiments.MNIST_experiments.run_mnist_shared_validation --seed 42 --epochs 16
+```
+
+#### 5. QUBO Validation-Tuning Grid Search (Standalone)
+To run the 27-configuration tuning grid (3 x 3 x 3) on a shared representation:
+```powershell
+.\.venv\Scripts\python.exe -m experiments.MNIST_experiments.tune_qubo_validation --seed 42 --epochs 16
+```
+
+#### 6. Generate Paper Tables and Figures
+```powershell
+# Generate summary CSVs from data/results/mnist_results.csv
+.\.venv\Scripts\python.exe -m experiments.MNIST_experiments.collect_results
+
+# Generate Figure 5 and head comparison plots from data/results/mnist_results.csv
+.\.venv\Scripts\python.exe -m experiments.MNIST_experiments.plot_results
+```
+
+#### 7. Inspect Generated Results
+```powershell
+# View summary table produced by collect_results
+Get-Content -Path data\results\main_classification_results.csv | Format-Table
+
+# View summary produced by run_mnist_controlled
+Get-Content -Path data\mnist_controlled_results_summary.csv | Format-Table
+```
+
+### 2.6 Output Locations and Protocol Distinction
+
+- **Historical Paper Results (`Old_results/mnist_results.csv`):** Contains the 40 original runs across seeds `42, 123, 456, 789, 999` using full 60,000-image training sets, unregularized legacy float32 LS, and independently retrained BNN-DFA backbones.
+- **Main Local Run Log (`data/results/mnist_results.csv`):** Default append target for individual experiment scripts and selected QUBO shared-validation runs.
+- **Diagnostic Result Directory (`data/results_diagnostic/`):** Contains timestamped CSV and JSON artifacts for QUBO 27-configuration grid tuning, shared-validation head comparisons, and smoke runs.
+- **Representation Cache (`data/mnist_representations/`):** Caches frozen BNN-DFA feature tensors (`mnist_bnn_dfa_seed_<seed>_epochs_<epochs>_val_<val_fraction>.pt`) with metadata and SHA-256 integrity verification.
+- **Controlled Runner Outputs (`data/mnist_controlled_results.csv` and `data/mnist_controlled_results_summary.csv`):** Output from `run_mnist_controlled.py`.
+
+> [!CAUTION]
+> **Do not confuse the protocols:**
+> - **Full-data independent backbone protocol:** 60,000 train, 10,000 test. Each method retrains its own feature extractor.
+> - **Shared-validation protocol:** 51,000 train, 9,000 validation, 10,000 test. All heads share the exact same frozen features from one BNN-DFA backbone. Validation data is strictly held out from training and used to tune QUBO parameters and pick the best STE epoch.
 
 ## 3. Stroke experiments
 
