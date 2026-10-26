@@ -1,4 +1,5 @@
 import argparse
+from pathlib import Path
 import torch
 import torch.nn.functional as F
 
@@ -391,6 +392,18 @@ def evaluate_qubo_head(
 
 if __name__ == "__main__":
 
+    # Import after this module's training and QUBO helpers are defined. The
+    # shared tuner imports those helpers for its standalone diagnostic path.
+    from experiments.MNIST_experiments.tune_qubo_validation import (
+        DEFAULT_NUM_READS,
+        DEFAULT_NUM_SWEEPS,
+        DEFAULT_SCALE_MULTIPLIERS,
+        _parse_grid,
+        tune_from_representations,
+        write_tuning_csv,
+        validate_grid,
+    )
+
     # --------------------------------------------------------
     # Seed
     # --------------------------------------------------------
@@ -399,7 +412,33 @@ if __name__ == "__main__":
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--qubo-scale-solver", choices=("ridge", "legacy"), default="ridge",
                         help="LS solver used only to initialize QUBO alpha scales")
+    parser.add_argument("--qubo-tuning", action="store_true",
+                        help="select QUBO reads and scale multiplier using a stratified training-only validation split")
+    parser.add_argument("--num-reads", type=int, default=100,
+                        help="fixed QUBO reads when --qubo-tuning is disabled")
+    parser.add_argument("--num-sweeps", type=int, default=1000,
+                        help="fixed QUBO sweeps when --qubo-tuning is disabled")
+    parser.add_argument("--num-reads-grid", type=lambda s: _parse_grid(s, int, "num-reads-grid"),
+                        default=DEFAULT_NUM_READS, help="tuning grid: comma-separated positive integers")
+    parser.add_argument("--num-sweeps-grid", type=lambda s: _parse_grid(s, int, "num-sweeps-grid"),
+                        default=DEFAULT_NUM_SWEEPS, help="tuning grid: comma-separated positive integers")
+    parser.add_argument("--scale-multipliers", type=lambda s: _parse_grid(s, float, "scale-multipliers"),
+                        default=DEFAULT_SCALE_MULTIPLIERS, help="tuning grid: comma-separated positive numbers")
+    parser.add_argument("--validation-fraction", type=float, default=0.15)
+    parser.add_argument("--epochs", type=int, default=16)
+    parser.add_argument("--representation-dir", type=Path, default=Path("data/mnist_representations"))
     args = parser.parse_args()
+    if args.epochs < 1 or args.num_reads < 1 or args.num_sweeps < 1:
+        parser.error("epochs, num-reads, and num-sweeps must be positive")
+    if not 0.05 <= args.validation_fraction <= 0.4:
+        parser.error("validation-fraction must be between 0.05 and 0.4")
+    if args.qubo_tuning:
+        try:
+            validate_grid(args.num_reads_grid, args.num_sweeps_grid, args.scale_multipliers)
+        except ValueError as exc:
+            parser.error(str(exc))
+        if args.qubo_scale_solver != "ridge":
+            parser.error("--qubo-tuning requires the Ridge scale initializer")
     seed = args.seed
     scale_solver = args.qubo_scale_solver
     set_seed(seed)
@@ -428,11 +467,16 @@ if __name__ == "__main__":
     # Data
     # --------------------------------------------------------
 
-    train_loader, test_loader = (
+    base_train_loader, test_loader = (
         get_mnist_loaders(
             batch_size=64
         )
     )
+    dataset = base_train_loader.dataset
+    training_seconds = 0.0
+    representation = None
+    representation_path = ""
+    representation_source = ""
 
     # ========================================================
     # STEP 1
@@ -444,38 +488,33 @@ if __name__ == "__main__":
         "Training BNN + DFA..."
     )
 
-    model = BNN().to(
-        device
-    )
-
-    dfa = DFAClassifier(
-        hidden_size=128,
-        output_size=10,
-        device=device
-    )
-
-    optimizer = torch.optim.Adam(
-        model.parameters(),
-        lr=0.001
-    )
-
-    with Timer() as training_timer:
-        for epoch in range(16):
-
-            loss, accuracy = train_dfa(
-                model,
-                train_loader,
-                optimizer,
-                dfa,
-                device
-            )
-
-            print(
-                f"Epoch {epoch + 1}/16 | "
-                f"Train Loss: {loss:.4f} | "
-                f"Train Accuracy: "
-                f"{accuracy:.2f}%"
-            )
+    if args.qubo_tuning:
+        from experiments.MNIST_experiments.mnist_representation import load_or_train_mnist_representation
+        representation, representation_path, representation_source = load_or_train_mnist_representation(
+            dataset, test_loader.dataset, seed, args.epochs, args.validation_fraction,
+            device=device, output_dir=args.representation_dir,
+        )
+        H_train, y_train = representation["H_train"], representation["y_train"]
+        H_val, y_val = representation["H_validation"], representation["y_validation"]
+        H_test, y_test = representation["H_test"], representation["y_test"]
+        training_seconds = (float(representation.get("training_seconds", 0.0))
+                            if representation_source == "trained" else 0.0)
+        model = None
+        print(f"Representation: {representation_path.resolve()} ({representation_source}, "
+              f"id={representation['artifact_id']})")
+        print(f"Tuning protocol: stratified train/validation split; "
+              f"{1.0 - args.validation_fraction:.0%} official training examples used for fitting")
+    else:
+        # Preserve the historical fixed-configuration protocol: train on all official train data.
+        train_loader = base_train_loader
+        model = BNN().to(device)
+        dfa = DFAClassifier(hidden_size=128, output_size=10, device=device)
+        optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
+        with Timer() as training_timer:
+            for epoch in range(args.epochs):
+                loss, accuracy = train_dfa(model, train_loader, optimizer, dfa, device)
+                print(f"Epoch {epoch + 1}/{args.epochs} | Train Loss: {loss:.4f} | Train Accuracy: {accuracy:.2f}%")
+        training_seconds = training_timer.seconds
 
     # ========================================================
     # STEP 2
@@ -487,13 +526,8 @@ if __name__ == "__main__":
         "Collecting hidden representations..."
     )
 
-    H_train, y_train = (
-        collect_hidden_features(
-            model,
-            train_loader,
-            device
-        )
-    )
+    if not args.qubo_tuning:
+        H_train, y_train = collect_hidden_features(model, train_loader, device)
 
     print(
         "Hidden feature shape:",
@@ -535,7 +569,16 @@ if __name__ == "__main__":
         f"Calculating QUBO scales using {scale_solver} LS initialization..."
     )
 
-    if scale_solver == "ridge":
+    tuning_winner = None
+    tuning_rows = None
+    if args.qubo_tuning:
+        tuning_winner, tuning_rows = tune_from_representations(
+            H_train, y_train, H_val, y_val, seed,
+            args.num_reads_grid, args.num_sweeps_grid, args.scale_multipliers,
+        )
+        qubo_scales = None
+        result_method = "BNN + DFA + QUBO (validation-selected Ridge scale initialization)"
+    elif scale_solver == "ridge":
         qubo_scales = calculate_ridge_ls_scales(
             H=H_train, labels=y_train, num_classes=10
         )
@@ -551,7 +594,7 @@ if __name__ == "__main__":
         "QUBO scales:"
     )
 
-    for class_id in range(10):
+    for class_id in range(10) if qubo_scales is not None else []:
 
         print(
             f"  Class {class_id}: "
@@ -569,14 +612,20 @@ if __name__ == "__main__":
     )
 
     with Timer() as qubo_timer:
-        binary_weights = optimize_binary_classifier(
-            H=H_train,
-            targets=targets,
-            scales=qubo_scales,
-            num_classes=10,
-            num_reads=100,
-            seed=seed
-        )
+        if args.qubo_tuning:
+            binary_weights = tuning_winner["_weights"]
+            final_scales = tuning_winner["_scales"]
+            biases = tuning_winner["_bias"]
+        else:
+            binary_weights = optimize_binary_classifier(
+                H=H_train,
+                targets=targets,
+                scales=qubo_scales,
+                num_classes=10,
+                num_reads=args.num_reads,
+                num_sweeps=args.num_sweeps,
+                seed=seed
+            )
 
     # ========================================================
     # VERIFY BINARY WEIGHTS
@@ -606,16 +655,17 @@ if __name__ == "__main__":
         "scales and biases..."
     )
 
-    (
-        binary_weights,
-        final_scales,
-        biases
-    ) = calculate_final_scale_and_bias(
-        H=H_train,
-        labels=y_train,
-        binary_weights=binary_weights,
-        num_classes=10
-    )
+    if not args.qubo_tuning:
+        (
+            binary_weights,
+            final_scales,
+            biases
+        ) = calculate_final_scale_and_bias(
+            H=H_train,
+            labels=y_train,
+            binary_weights=binary_weights,
+            num_classes=10
+        )
 
     print()
     print(
@@ -652,13 +702,23 @@ if __name__ == "__main__":
     )
 
     test_accuracy = evaluate_qubo_head(
-        model=model,
-        binary_weights=binary_weights,
-        scales=final_scales,
-        biases=biases,
-        test_loader=test_loader,
-        device=device
+        model=model, binary_weights=binary_weights, scales=final_scales,
+        biases=biases, test_loader=test_loader, device=device
+    ) if not args.qubo_tuning else float(
+        ( (H_test.float() @ (binary_weights * final_scales.unsqueeze(0)) + biases).argmax(1) == y_test )
+        .float().mean().item() * 100.0
     )
+
+    tuning_csv_path = ""
+    if args.qubo_tuning:
+        tuning_csv_path = write_tuning_csv(
+            tuning_rows, seed, args.epochs, args.validation_fraction,
+            representation_artifact_id=representation["artifact_id"],
+            n_train=representation["metadata"]["sample_counts"]["train"],
+            n_validation=representation["metadata"]["sample_counts"]["validation"],
+            n_test=representation["metadata"]["sample_counts"]["test"],
+        )
+        print(f"Tuning configurations CSV: {tuning_csv_path.resolve()}")
 
     # ========================================================
     # RESULT
@@ -685,7 +745,25 @@ if __name__ == "__main__":
         seed=seed,
         test_accuracy=test_accuracy,
         test_loss=None,
-        training_time_sec=training_timer.seconds,
-        parameter_count=count_parameters(model),
+        training_time_sec=training_seconds,
+        parameter_count=(count_parameters(model) if model is not None else
+                         representation["metadata"]["backbone_parameter_count"]),
         qubo_time_sec=qubo_timer.seconds,
+        qubo_tuning_enabled=args.qubo_tuning,
+        qubo_num_reads_selected=tuning_winner["num_reads"] if tuning_winner else None,
+        qubo_num_sweeps_selected=tuning_winner["num_sweeps"] if tuning_winner else None,
+        qubo_grid_protocol="fixed_27_configuration_v1" if tuning_winner else "",
+        qubo_scale_multiplier_selected=tuning_winner["scale_multiplier"] if tuning_winner else None,
+        qubo_validation_accuracy=tuning_winner["validation_accuracy"] if tuning_winner else None,
+        qubo_validation_fraction=args.validation_fraction if args.qubo_tuning else None,
+        qubo_grid_size=len(tuning_rows) if tuning_rows else None,
+        qubo_solver_seed_selected=tuning_winner["solver_seed"] if tuning_winner else None,
+        qubo_selection_metric="validation_accuracy_percent" if tuning_winner else "",
+        notes=f"tuning_csv={tuning_csv_path.resolve()}" if tuning_csv_path else "",
+        representation_artifact_id=representation["artifact_id"] if representation else "",
+        representation_path=str(representation_path.resolve()) if representation else "",
+        representation_cache_status=representation_source,
+        n_train=representation["metadata"]["sample_counts"]["train"] if representation else len(y_train),
+        n_validation=representation["metadata"]["sample_counts"]["validation"] if representation else None,
+        n_test=representation["metadata"]["sample_counts"]["test"] if representation else len(test_loader.dataset),
     )
