@@ -1,0 +1,44 @@
+name: Source bundle snapshot
+
+on:
+  push:
+    branches: [xai-full-integration-2026-10]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  bundle:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Package tracked source
+        run: |
+          python - <<'PY'
+          import zipfile, subprocess
+          from pathlib import Path
+          root = Path('.').resolve()
+          paths = subprocess.check_output(['git', 'ls-files', '-co', '--exclude-standard'], text=True).splitlines()
+          out = root.parent / 'BNN-DFA-QUBO-source.zip'
+          excluded = {'.git', '.venv', 'venv', '__pycache__', '.pytest_cache'}
+          with zipfile.ZipFile(out, 'w', zipfile.ZIP_DEFLATED, compresslevel=6) as z:
+              for name in paths:
+                  p = root / name
+                  if not p.is_file() or any(part in excluded for part in Path(name).parts):
+                      continue
+                  if Path(name).parts[0] in {'data', 'outputs', 'checkpoints'}:
+                      continue
+                  if p.suffix in {'.pyc', '.pyo'}:
+                      continue
+                  z.write(p, Path('BNN-DFA-QUBO') / name)
+          print(f'Created {out}: {out.stat().st_size} bytes')
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bnn-dfa-qubo-source-fast
+          path: ../BNN-DFA-QUBO-source.zip
+          retention-days: 3
