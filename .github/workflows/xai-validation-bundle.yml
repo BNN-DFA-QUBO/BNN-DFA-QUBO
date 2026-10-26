@@ -49,7 +49,7 @@ jobs:
           import os, zipfile
           from pathlib import Path
           root = Path('.').resolve()
-          out = root.parent / 'BNN-DFA-QUBO-source.zip'
+          out = root / 'BNN-DFA-QUBO-source.zip'
           excluded = {'.git', '.venv', 'venv', '__pycache__', '.pytest_cache', '.mypy_cache'}
           with zipfile.ZipFile(out, 'w', zipfile.ZIP_DEFLATED, compresslevel=6) as z:
               for p in root.rglob('*'):
@@ -72,7 +72,7 @@ jobs:
         with:
           name: bnn-dfa-qubo-source-bundle
           path: |
-            ../BNN-DFA-QUBO-source.zip
+            BNN-DFA-QUBO-source.zip
           if-no-files-found: error
           retention-days: 3
 
