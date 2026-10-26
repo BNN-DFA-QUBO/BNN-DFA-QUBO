@@ -373,18 +373,28 @@ def evaluate_qubo_head(
     )
 
 
-def _recorded_qubo_runtime(tuning_rows, fixed_runtime_sec):
-    """Return total candidate cost for tuning, or the fixed-run timer."""
+def _recorded_qubo_runtime(tuning_rows, fixed_runtime_sec, total_tuning_seconds=None):
+    """Return end-to-end tuner duration, or the fixed-run solver timer.
+
+    Tuned duration includes scale initialization, all candidate fits/refits,
+    validation scoring, and winner selection. Test evaluation is excluded.
+    """
     if tuning_rows is None:
         return fixed_runtime_sec
+    if total_tuning_seconds is not None:
+        return float(total_tuning_seconds)
     return sum(float(row["runtime_sec"]) for row in tuning_rows)
 
 
-def _append_qubo_result(tuning_rows, fixed_runtime_sec, **result_fields):
+def _append_qubo_result(tuning_rows, fixed_runtime_sec, total_tuning_seconds=None, **result_fields):
     """Append a QUBO result with runtime semantics matching its run mode."""
     result_fields["qubo_time_sec"] = _recorded_qubo_runtime(
-        tuning_rows, fixed_runtime_sec,
+        tuning_rows, fixed_runtime_sec, total_tuning_seconds,
     )
+    if tuning_rows is not None and result_fields.get("qubo_selected_candidate_time_sec") is None:
+        result_fields["qubo_selected_candidate_time_sec"] = next(
+            (float(row["runtime_sec"]) for row in tuning_rows if row.get("selected")), None
+        )
     append_result(**result_fields)
 
 
@@ -740,6 +750,7 @@ if __name__ == "__main__":
     _append_qubo_result(
         tuning_rows=tuning_rows,
         fixed_runtime_sec=qubo_timer.seconds,
+        total_tuning_seconds=(tuning_winner.get("tuning_total_seconds") if tuning_winner else None),
         experiment="bnn_dfa_qubo",
         method=result_method,
         seed=seed,

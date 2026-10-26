@@ -154,8 +154,16 @@ def build_ising_model(
     alpha is fixed before QUBO optimization.
     """
 
-    H = H.float()
-    target = target.float()
+    H = torch.as_tensor(H).detach().to(device="cpu", dtype=torch.float64)
+    target = torch.as_tensor(target).detach().reshape(-1).to(device="cpu", dtype=torch.float64)
+    if H.ndim != 2 or H.shape[0] != target.shape[0] or H.shape[0] == 0 or H.shape[1] == 0:
+        raise ValueError("QUBO requires aligned, non-empty features and targets")
+    if not torch.isfinite(H).all() or not torch.isfinite(target).all():
+        raise ValueError("QUBO requires finite features and targets")
+    if (not isinstance(alpha, Real) or isinstance(alpha, bool)
+            or not math.isfinite(float(alpha)) or float(alpha) <= 0):
+        raise ValueError("alpha must be finite and positive")
+    alpha = float(alpha)
 
     # ---------------------------------------------------------
     # Remove optimal continuous bias
@@ -185,6 +193,8 @@ def build_ising_model(
     # ---------------------------------------------------------
 
     gram = Hc.T @ Hc
+    if not torch.isfinite(gram).all():
+        raise ValueError("QUBO coefficient construction overflowed while computing the feature Gram matrix")
 
     quadratic = (
         alpha ** 2
@@ -196,6 +206,8 @@ def build_ising_model(
         * alpha
         * (Hc.T @ yc)
     )
+    if not torch.isfinite(quadratic).all() or not torch.isfinite(linear).all():
+        raise ValueError("QUBO coefficient construction produced non-finite linear or quadratic coefficients")
 
     hidden_size = H.shape[1]
 
@@ -251,8 +263,12 @@ def optimize_binary_class(
     if not isinstance(num_sweeps, Integral) or isinstance(num_sweeps, bool) or num_sweeps <= 0:
         raise ValueError("num_sweeps must be a positive integer")
     if (not isinstance(alpha, Real) or isinstance(alpha, bool)
-            or not math.isfinite(float(alpha))):
-        raise ValueError("alpha must be a finite real number")
+            or not math.isfinite(float(alpha)) or float(alpha) <= 0):
+        raise ValueError("alpha must be finite and positive")
+    if seed is not None and (
+        not isinstance(seed, Integral) or isinstance(seed, bool) or not 0 <= int(seed) <= (2 ** 32) - 1
+    ):
+        raise ValueError("seed must be an integer in [0, 4294967295]")
 
     h, J = build_ising_model(
         H=H,
@@ -264,13 +280,12 @@ def optimize_binary_class(
         neal.SimulatedAnnealingSampler()
     )
 
-    response = sampler.sample_ising(
-        h,
-        J,
-        num_reads=num_reads,
-        num_sweeps=num_sweeps,
-        seed=seed
-    )
+    try:
+        response = sampler.sample_ising(
+            h, J, num_reads=num_reads, num_sweeps=num_sweeps, seed=seed
+        )
+    except Exception as exc:
+        raise RuntimeError("simulated annealing failed while sampling the MNIST QUBO Ising model") from exc
 
     try:
         sample_count = len(response)
@@ -279,11 +294,29 @@ def optimize_binary_class(
     if sample_count == 0:
         raise RuntimeError("simulated annealing returned no samples")
     try:
+        variables = list(response.variables)
+        samples = response.record.sample
         best_sample = response.first.sample
     except Exception as exc:
-        raise RuntimeError("simulated annealing response has no first sample") from exc
+        raise RuntimeError("simulated annealing response is missing variables or sample data") from exc
 
+    if len(set(variables)) != len(variables):
+        raise RuntimeError("simulated annealing response contains duplicate variables")
+    if len(samples) != sample_count or len(samples.shape) != 2 or samples.shape[1] != len(variables):
+        raise RuntimeError("simulated annealing response has malformed sample dimensions")
     expected_variables = set(range(H.shape[1]))
+    if not expected_variables.issubset(set(variables)):
+        missing = sorted(expected_variables.difference(variables))
+        raise RuntimeError(f"simulated annealing response is missing expected variables: {missing}")
+    positions = {variable: index for index, variable in enumerate(variables)}
+    for sample_index, row in enumerate(samples):
+        invalid_row = {
+            variable: row[positions[variable]] for variable in expected_variables
+            if isinstance(row[positions[variable]], bool)
+            or row[positions[variable]] not in (-1, 1)
+        }
+        if invalid_row:
+            raise RuntimeError(f"simulated annealing response has invalid bipolar spins in sample {sample_index}: {invalid_row}")
     try:
         returned_variables = set(best_sample.keys())
     except (AttributeError, TypeError) as exc:
@@ -292,7 +325,7 @@ def optimize_binary_class(
         missing = sorted(expected_variables.difference(returned_variables))
         raise RuntimeError(f"simulated annealing sample is missing variables: {missing}")
     invalid = {variable: best_sample[variable] for variable in expected_variables
-               if best_sample[variable] not in (-1, 1)}
+               if isinstance(best_sample[variable], bool) or best_sample[variable] not in (-1, 1)}
     if invalid:
         raise RuntimeError(f"simulated annealing sample contains non-bipolar values: {invalid}")
 

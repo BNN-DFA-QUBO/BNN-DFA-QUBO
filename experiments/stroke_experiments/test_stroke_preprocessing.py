@@ -1,5 +1,6 @@
 """Scientific invariant tests: python -m unittest experiments.stroke_experiments.test_stroke_preprocessing"""
 import tempfile
+import warnings
 import unittest
 import json
 import io
@@ -226,16 +227,35 @@ class StrokePreprocessingTests(unittest.TestCase):
                     "resampled_train_class_counts": {"0": 2, "1": 2},
                     "validation_class_counts": {"0": 1, "1": 1}, "test_class_counts": {"0": 1, "1": 1},
                     "resampled_train_row_ids": list(range(4)),
-                    "split_row_ids": {"train": [0, 1, 2, 3], "validation": [4, 5], "test": [6, 7]}}
+                    "split_row_ids": {"train": [0, 1, 2, 3], "validation": [4, 5], "test": [6, 7]},
+                    "split_row_labels": {"train": [0, 1, 0, 1], "validation": [0, 1], "test": [0, 1]}}
         with tempfile.TemporaryDirectory(dir=Path("data")) as tmp:
             result = {"seed": 4, "training_seed": 4, "device": "cpu", "best_epoch": 1, "best_val_ba": .5,
                       "feature_names": ["age"], "data_metadata": metadata,
+                      "training_config": {"hidden_size": 3, "batch_size": 8},
                       "H_train": torch.zeros(4, 3), "H_val": torch.zeros(2, 3), "H_test": torch.zeros(2, 3),
                       "y_train": pd.Series([0, 1, 0, 1]), "y_val": pd.Series([0, 1]), "y_test": pd.Series([0, 1])}
             path = Path(tmp) / "representation.pt"
             save_representation(result, path, ["age"])
-            loaded = load_representation(path, expected_metadata=metadata)
+            loaded = load_representation(path, expected_metadata=metadata, expected_seed=4,
+                                         expected_training_config={"hidden_size": 3}, expected_hidden_size=3)
             self.assertEqual(len(loaded["y_train"]), loaded["H_train"].shape[0])
+            with self.assertRaisesRegex(ValueError, "training configuration field"):
+                load_representation(path, expected_metadata=metadata,
+                                    expected_training_config={"batch_size": 16})
+            legacy = torch.load(path, weights_only=False)
+            legacy["representation_version"] = "stroke-representation-v2"
+            legacy.pop("representation_sha256")
+            legacy.pop("integrity_status")
+            torch.save(legacy, path)
+            with warnings.catch_warnings(record=True) as caught:
+                warnings.simplefilter("always")
+                legacy_loaded = load_representation(path, expected_metadata=metadata)
+            self.assertEqual(legacy_loaded["integrity_status"], "legacy_unverified")
+            self.assertTrue(any("legacy Stroke representation" in str(item.message) for item in caught))
+            # A separately saved valid artifact is used for the v3 mutation cases below.
+            path.unlink()
+            save_representation(result, path, ["age"])
             raw = torch.load(path, weights_only=False)
             raw["representation_version"] = "old"
             torch.save(raw, path)
@@ -244,7 +264,45 @@ class StrokePreprocessingTests(unittest.TestCase):
             raw["representation_version"] = "stroke-representation-v2"
             raw["y_val"] = torch.tensor([0.0])
             torch.save(raw, path)
-            with self.assertRaisesRegex(ValueError, "do not align"):
+            with self.assertRaisesRegex(ValueError, "dimensions|do not align"):
+                load_representation(path, expected_metadata=metadata)
+
+    def test_v3_representation_rejects_feature_and_row_identity_tampering(self):
+        metadata = {"preprocessing_version": PREPROCESSING_VERSION, "dataset_sha256": "c" * 64, "split_seed": 12,
+                    "preprocessing_config_hash": "d" * 64, "feature_names": ["age"], "input_size": 1,
+                    "resampled_train_class_counts": {"0": 2, "1": 2},
+                    "validation_class_counts": {"0": 1, "1": 1}, "test_class_counts": {"0": 1, "1": 1},
+                    "resampled_train_row_ids": [0, 1, 2, 3],
+                    "split_row_ids": {"train": [0, 1, 2, 3], "validation": [4, 5], "test": [6, 7]},
+                    "split_row_labels": {"train": [0, 1, 0, 1], "validation": [0, 1], "test": [0, 1]}}
+        result = {"seed": 12, "training_seed": 12, "device": "cpu", "best_epoch": 1, "best_val_ba": .5,
+                  "feature_names": ["age"], "data_metadata": metadata,
+                  "H_train": torch.arange(12, dtype=torch.float32).reshape(4, 3),
+                  "H_val": torch.zeros(2, 3), "H_test": torch.ones(2, 3),
+                  "y_train": pd.Series([0, 1, 0, 1]), "y_val": pd.Series([0, 1]), "y_test": pd.Series([0, 1])}
+        with tempfile.TemporaryDirectory(dir=Path("data")) as tmp:
+            path = Path(tmp) / "representation.pt"
+            save_representation(result, path, ["age"])
+            raw = torch.load(path, weights_only=False)
+            raw["H_train"][0, 0] += 1
+            torch.save(raw, path)
+            with self.assertRaisesRegex(ValueError, "content hash mismatch"):
+                load_representation(path, expected_metadata=metadata)
+
+            path.unlink()
+            save_representation(result, path, ["age"])
+            raw = torch.load(path, weights_only=False)
+            raw["y_val"] = raw["y_val"].flip(0)
+            torch.save(raw, path)
+            with self.assertRaisesRegex(ValueError, "labels do not correspond"):
+                load_representation(path, expected_metadata=metadata)
+
+            path.unlink()
+            save_representation(result, path, ["age"])
+            raw = torch.load(path, weights_only=False)
+            raw["data_metadata"]["split_row_ids"]["train"][0] = 99
+            torch.save(raw, path)
+            with self.assertRaisesRegex(ValueError, "row identities overlap|outside the original training split|content hash mismatch"):
                 load_representation(path, expected_metadata=metadata)
 
     def test_vectorized_threshold_search_matches_exact_reference_loop(self):
@@ -390,7 +448,7 @@ class StrokePreprocessingTests(unittest.TestCase):
         y_test = torch.tensor([0, 1] * 10, dtype=torch.float32)
         def hidden(labels):
             signal = labels.numpy()[:, None] * 0.7
-            return torch.tensor(rng.normal(size=(len(labels), 6)) + signal, dtype=torch.float32)
+            return torch.tensor(rng.normal(size=(len(labels), 64)) + signal, dtype=torch.float32)
         metadata = {
             "preprocessing_version": PREPROCESSING_VERSION, "dataset_sha256": "c" * 64, "split_seed": 11,
             "preprocessing_config_hash": "d" * 64, "input_size": 20, "feature_names": [f"x{i}" for i in range(20)],
@@ -398,6 +456,8 @@ class StrokePreprocessingTests(unittest.TestCase):
             "resampled_train_class_counts": {"0": 24, "1": 24}, "validation_class_counts": {"0": 10, "1": 10},
             "test_class_counts": {"0": 10, "1": 10}, "resampled_train_row_ids": list(range(48)),
             "split_row_ids": {"train": list(range(48)), "validation": list(range(48, 68)), "test": list(range(68, 88))},
+            "split_row_labels": {"train": y_train.long().tolist(), "validation": y_val.long().tolist(),
+                                 "test": y_test.long().tolist()},
         }
         with tempfile.TemporaryDirectory(dir=Path("data")) as tmp:
             path = Path(tmp) / "heads.pt"

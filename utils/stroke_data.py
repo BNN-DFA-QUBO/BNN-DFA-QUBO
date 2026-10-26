@@ -281,6 +281,10 @@ def prepare_stroke_data(split_seed: int | None = None, balance_method: str | Non
         "library_versions": config_payload["libraries"],
         "split_policy": SPLIT_POLICY, "split_sizes": {"train": len(train_idx), "validation": len(val_idx), "test": len(test_idx)},
         "split_row_ids": {name: df.id.iloc[idx].tolist() for name, idx in (("train", train_idx), ("validation", val_idx), ("test", test_idx))},
+        # Original split labels make feature/label ordering verifiable after
+        # oversampling duplicates training row IDs.
+        "split_row_labels": {name: df.stroke.iloc[idx].astype(int).tolist()
+                             for name, idx in (("train", train_idx), ("validation", val_idx), ("test", test_idx))},
         "resampled_train_row_ids": resampled_train_row_ids,
         "feature_names": preprocessor.feature_names, "input_size": len(preprocessor.feature_names),
         "original_train_class_counts": {str(k): int(v) for k, v in original_counts.items()},
@@ -290,18 +294,26 @@ def prepare_stroke_data(split_seed: int | None = None, balance_method: str | Non
         "balancing_method": balance_method,
     }
     if prior and compatible and not overwrite:
-        # Validate every persisted provenance field, including the split seed/policy,
-        # library versions, row identities, and balancing details. The config hash
-        # alone cannot detect metadata edited independently of the fitted artifacts.
-        for key, expected_value in metadata.items():
+        # Old preprocessing metadata can be enriched with labels tied to the
+        # already persisted IDs because this loader has re-read the checksummed
+        # source and reconstructed the exact deterministic split.
+        legacy_metadata = "split_row_labels" not in prior
+        keys_to_check = [key for key in metadata if not (legacy_metadata and key == "split_row_labels")]
+        for key in keys_to_check:
+            expected_value = metadata[key]
             if prior.get(key) != expected_value:
                 raise ValueError(f"Saved stroke metadata field {key!r} does not match the current deterministic pipeline")
+        if legacy_metadata:
+            metadata_path.write_text(json.dumps(metadata, indent=2), encoding="utf-8")
+        else:
+            metadata = prior
     if prior is None or overwrite:
         joblib.dump(preprocessor, preprocessor_path)
         metadata_path.write_text(json.dumps(metadata, indent=2), encoding="utf-8")
     else:
-        # Do not rewrite matching artifacts; their provenance remains stable.
-        metadata = prior
+        # Matching artifacts are preserved byte-for-byte unless legacy row
+        # labels were safely reconstructed above.
+        metadata = metadata if "split_row_labels" in metadata and (prior is None or "split_row_labels" not in prior) else prior
     return X_train, X_val, X_test, y_train, y_val, y_test
 
 

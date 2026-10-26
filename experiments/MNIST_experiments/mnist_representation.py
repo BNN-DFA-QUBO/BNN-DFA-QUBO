@@ -2,6 +2,9 @@
 from __future__ import annotations
 
 import time
+from pathlib import Path
+import sys
+from datetime import datetime
 
 import torch
 from torch.utils.data import DataLoader, Subset
@@ -31,8 +34,28 @@ def load_or_train_mnist_representation(
     metadata = build_metadata(train_dataset, test_dataset, seed, epochs, validation_fraction,
                               device=device)
     path = representation_path(output_dir, seed, epochs, validation_fraction)
+
+    def load_cached():
+        try:
+            return load_representation(path, metadata, train_dataset, test_dataset)
+        except Exception as exc:
+            recovery_stamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+            recovery_fraction = f"{float(validation_fraction):.4f}".replace(".", "p")
+            recovery_dir = Path(output_dir) / (
+                f"rebuild_seed_{seed}_epochs_{epochs}_val_{recovery_fraction}_{recovery_stamp}"
+            )
+            command = (
+                f'"{sys.executable}" -m experiments.MNIST_experiments.run_mnist_shared_validation '
+                f"--seed {seed} --epochs {epochs} --validation-fraction {validation_fraction:g} "
+                f"--representation-dir \"{recovery_dir}\""
+            )
+            raise RuntimeError(
+                f"MNIST representation cache at {path} could not be reused: {exc}. "
+                f"The existing artifact was left unchanged. To build a fresh, isolated cache, run: {command}"
+            ) from exc
+
     if path.exists():
-        data = load_representation(path, metadata, train_dataset, test_dataset)
+        data = load_cached()
         return data, path, "reused"
 
     indices = metadata["split_indices"]
@@ -69,7 +92,7 @@ def load_or_train_mnist_representation(
     except FileExistsError:
         # Another process may have populated the exact requested cache after our
         # initial existence check. Validate it before reuse.
-        data = load_representation(path, metadata, train_dataset, test_dataset)
+        data = load_cached()
         return data, path, "reused"
     # Round-trip through validation so newly generated artifacts and reused artifacts
     # pass the same provenance and alignment checks.

@@ -11,6 +11,7 @@ sys.path.append(
 from utils.stroke_config import BALANCING_METHOD, SEEDS, SPLIT_SEED
 from utils.stroke_representation import save_representation
 from utils.stroke_data import DATA_DIR, load_stroke_metadata, prepare_stroke_data
+from utils.run_provenance import collect_run_provenance, stable_run_id
 
 from experiments.stroke_experiments.stroke_bnn_dfa import train_dfa
 from experiments.stroke_experiments.stroke_real_ls import train_real_ls
@@ -86,6 +87,9 @@ def run_experiments(seeds=None, split_seed=SPLIT_SEED, balancing_method=BALANCIN
             ("Binarized Ridge LS (refit scale+bias)", "ridge"),
         ]
     seeds = list(SEEDS if seeds is None else seeds)
+    if len(seeds) != len(set(seeds)):
+        raise ValueError("Duplicate model seeds would create duplicate controlled-run records")
+    run_provenance = collect_run_provenance()
     representation_paths = [output_dir / f"stroke_dfa_representation_seed_{seed}.pt" for seed in seeds]
     model_result_paths = [output_dir / f"stroke_bnn_dfa_seed_{seed}.json" for seed in seeds]
     existing_outputs = [str(path) for path in representation_paths + model_result_paths if path.exists()]
@@ -130,7 +134,7 @@ def run_experiments(seeds=None, split_seed=SPLIT_SEED, balancing_method=BALANCIN
         dfa_result = train_dfa(seed, split_seed=split_seed, balance_method=balancing_method,
                                overwrite=overwrite, output_dir=output_dir)
 
-        save_representation(
+        representation_artifact = save_representation(
             dfa_result,
             str(representation_path),
             feature_names=dfa_result["feature_names"]
@@ -204,7 +208,31 @@ def run_experiments(seeds=None, split_seed=SPLIT_SEED, balancing_method=BALANCIN
                 "validation": preprocessing_metadata["validation_class_counts"],
                 "test": preprocessing_metadata["test_class_counts"],
             }, sort_keys=True)
-            result["representation_path"] = representation_path
+            result["representation_path"] = str(representation_path)
+            result["representation_sha256"] = representation_artifact["representation_sha256"]
+            result["run_id"] = stable_run_id("stroke_controlled_end_to_end", {
+                "method": method_name, "seed": seed,
+                "split_seed": preprocessing_metadata["split_seed"],
+                "dataset_sha256": preprocessing_metadata["dataset_sha256"],
+                "preprocessing_config_hash": preprocessing_metadata["preprocessing_config_hash"],
+                "representation_sha256": representation_artifact["representation_sha256"],
+                "method_variant": result["method_variant"],
+                "alpha": result.get("alpha"),
+                "alpha_multiplier": result.get("alpha_multiplier"),
+                "qubo_num_reads": result.get("qubo_num_reads"),
+                "qubo_num_sweeps": result.get("qubo_num_sweeps"),
+                "qubo_solver_seed_selected": result.get("qubo_solver_seed_selected"),
+            }, run_provenance)
+            result["git_commit_sha"] = run_provenance.get("git_commit_sha", "unavailable")
+            result["git_worktree_dirty"] = run_provenance.get("git_worktree_dirty", "unavailable")
+            result["git_worktree_fingerprint"] = run_provenance.get("git_worktree_fingerprint", "unavailable")
+            result["python_version"] = run_provenance.get("python_version", "unavailable")
+            result["os_platform"] = run_provenance.get("os_platform", "unavailable")
+            result["package_versions_json"] = json.dumps(run_provenance.get("package_versions", {}), sort_keys=True)
+            result["provenance_json"] = json.dumps(run_provenance, sort_keys=True)
+            result["representation_provenance_json"] = json.dumps(
+                representation_artifact.get("run_provenance", {}), sort_keys=True
+            )
 
             all_results.append(result)
 
@@ -216,7 +244,7 @@ def run_experiments(seeds=None, split_seed=SPLIT_SEED, balancing_method=BALANCIN
                 print(f"ROC-AUC: {result['roc_auc'] * 100:.4f}%")
                 print(f"PR-AUC: {result['pr_auc'] * 100:.4f}%")
 
-    save_results(all_results, results_path)
+    save_results(all_results, results_path, overwrite=overwrite)
 
     print()
     print("=" * 70)
@@ -234,7 +262,7 @@ def run_experiments(seeds=None, split_seed=SPLIT_SEED, balancing_method=BALANCIN
     )
 
 
-def save_results(results, results_path=None):
+def save_results(results, results_path=None, overwrite=False):
     if not results:
         return
     results_path = RESULTS_PATH if results_path is None else Path(results_path)
@@ -283,6 +311,7 @@ def save_results(results, results_path=None):
         "alpha_multiplier",
         "qubo_alpha_multipliers",
         "qubo_candidate_count",
+        "qubo_top_candidates_per_scale",
         "qubo_search_seconds",
         "qubo_candidate_generation_seconds",
         "qubo_validation_selection_seconds",
@@ -292,6 +321,9 @@ def save_results(results, results_path=None):
         "qubo_num_reads",
         "qubo_num_reads_per_scale",
         "qubo_num_sweeps",
+        "qubo_solver_seed_base",
+        "qubo_solver_seed_selected",
+        "qubo_solver_seed_rule",
         "qubo_random_seed_starts",
         "qubo_total_reads",
         "initialization",
@@ -309,14 +341,26 @@ def save_results(results, results_path=None):
         "hidden_feature_transform",
         "standardized_constant_units",
         "head_seed",
-        "representation_path"
+        "representation_path",
+        "representation_sha256",
+        "run_id",
+        "git_commit_sha",
+        "git_worktree_dirty",
+        "git_worktree_fingerprint",
+        "python_version",
+        "os_platform",
+        "package_versions_json",
+        "provenance_json",
+        "representation_provenance_json",
     ]
 
-    with open(
-        results_path,
-        "w",
-        newline=""
-    ) as file:
+    if results_path.exists() and not overwrite:
+        raise FileExistsError(f"Refusing to replace existing controlled results: {results_path}")
+    run_ids = [row.get("run_id") for row in results if row.get("run_id")]
+    if len(run_ids) != len(set(run_ids)):
+        raise ValueError("Duplicate run_id values found in controlled results")
+    results_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(results_path, "w" if overwrite else "x", newline="") as file:
 
         writer = csv.DictWriter(
             file,

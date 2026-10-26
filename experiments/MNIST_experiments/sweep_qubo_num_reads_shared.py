@@ -1,4 +1,10 @@
-"""Sweep QUBO read counts over shared frozen BNN+DFA representations."""
+"""Descriptive read-count sweep over shared frozen BNN+DFA representations.
+
+This workflow reports post-hoc test metrics for each read count and has no
+validation selection stage. Its test results are exploratory and must not be
+used to select ``num_reads`` or reported as an unbiased selected-model score.
+Use ``tune_qubo_validation`` for validation-based candidate selection.
+"""
 from __future__ import annotations
 
 import argparse
@@ -23,6 +29,8 @@ from models.ls_heads import accuracy_from_scores
 from models.qubo_head import calculate_ridge_ls_scales, optimize_binary_classifier
 from utils.MNIST.data import get_mnist_loaders
 from utils.MNIST.seed import set_seed
+
+SELECTION_WARNING = "post_hoc_descriptive_test_metric_not_for_selection"
 
 
 def head_scores(H, binary_weights, scales, biases):
@@ -111,6 +119,7 @@ def main():
                 "num_sweeps": args.num_sweeps,
                 "train_accuracy": train_accuracy,
                 "test_accuracy": test_accuracy,
+                "test_metric_role": SELECTION_WARNING,
                 "qubo_optimization_seconds": optimization_seconds,
                 "configuration": (
                     "BNN+DFA hidden_size=128 output_size=10 Adam lr=0.001; "
@@ -135,6 +144,7 @@ def main():
             "num_reads": read_count,
             "seed_count": len(group),
             "mean_test_accuracy": statistics.mean(accuracies),
+            "test_metric_role": SELECTION_WARNING,
             "sample_std_test_accuracy": statistics.stdev(accuracies) if len(accuracies) > 1 else "",
             "mean_qubo_optimization_seconds": statistics.mean(runtimes),
             "sample_std_qubo_optimization_seconds": statistics.stdev(runtimes) if len(runtimes) > 1 else "",
@@ -151,12 +161,12 @@ def main():
     aggregate_path = output_dir / f"sweep_qubo_num_reads_shared_aggregate_{timestamp}.csv"
     write_csv_exclusive(
         detailed_path,
-        ["seed", "epochs", "batch_size", "num_reads", "num_sweeps", "train_accuracy", "test_accuracy", "qubo_optimization_seconds", "configuration"],
+        ["seed", "epochs", "batch_size", "num_reads", "num_sweeps", "train_accuracy", "test_accuracy", "test_metric_role", "qubo_optimization_seconds", "configuration"],
         detailed_rows,
     )
     write_csv_exclusive(
         aggregate_path,
-        ["num_reads", "num_sweeps", "seed_count", "mean_test_accuracy", "sample_std_test_accuracy", "mean_qubo_optimization_seconds", "sample_std_qubo_optimization_seconds", "epochs", "batch_size", "seeds", "configuration"],
+        ["num_reads", "num_sweeps", "seed_count", "mean_test_accuracy", "test_metric_role", "sample_std_test_accuracy", "mean_qubo_optimization_seconds", "sample_std_qubo_optimization_seconds", "epochs", "batch_size", "seeds", "configuration"],
         aggregate_rows,
     )
     print(f"\nDetailed results saved to: {detailed_path.resolve()}")

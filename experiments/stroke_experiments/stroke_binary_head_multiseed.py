@@ -21,10 +21,11 @@ from sklearn.metrics import (
     average_precision_score,
     confusion_matrix,
 )
-from utils.stroke_representation import load_representation
+from utils.stroke_representation import load_stroke_head_representation
 from utils.stroke_binary_features import standardize_hidden_features
 from utils.stroke_data import DATA_DIR
 from utils.stroke_metrics import find_best_threshold as shared_find_best_threshold
+from utils.run_provenance import collect_run_provenance, stable_run_id
 
 
 
@@ -62,6 +63,52 @@ MULTISEED_METHOD_METADATA = {
 }
 
 
+def qubo_result_columns(result):
+    """Keep the selected QUBO configuration and timer fields in raw records."""
+    names = (
+        "alpha", "base_alpha", "alpha_multiplier", "qubo_num_reads",
+        "qubo_num_reads_per_scale", "qubo_num_sweeps", "qubo_total_reads",
+        "qubo_random_seed_starts", "qubo_top_candidates_per_scale",
+        "qubo_solver_seed_base", "qubo_solver_seed_selected", "qubo_solver_seed_rule",
+        "qubo_candidate_count", "qubo_energy", "qubo_candidate_source",
+        "qubo_search_seconds", "qubo_candidate_generation_seconds",
+        "qubo_validation_selection_seconds", "validation_balanced_accuracy",
+        "validation_selection_score", "validation_f1", "validation_pr_auc",
+        "validation_roc_auc", "threshold", "bias", "hidden_feature_transform",
+        "standardized_constant_units",
+    )
+    output = {name: result[name] for name in names if name in result}
+    if "qubo_alpha_multipliers" in result:
+        output["qubo_alpha_multipliers"] = json.dumps(result["qubo_alpha_multipliers"])
+    return output
+
+
+def write_multiseed_results(output_path, summary_path, rows, overwrite=False):
+    """Write fixed-representation raw/summary CSVs with duplicate-run checks."""
+    output_path, summary_path = Path(output_path), Path(summary_path)
+    existing = [str(path) for path in (output_path, summary_path) if path.exists()]
+    if existing and not overwrite:
+        raise FileExistsError("Refusing to replace existing multi-seed outputs: " + ", ".join(existing))
+    run_ids = [row.get("run_id") for row in rows if row.get("run_id")]
+    if len(run_ids) != len(set(run_ids)):
+        raise ValueError("Duplicate run_id values found in fixed-representation results")
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    df = pd.DataFrame(rows)
+    df.to_csv(output_path, index=False)
+    group_keys = [key for key in (
+        "method", "experiment_type", "dataset_sha256", "preprocessing_version",
+        "preprocessing_config_hash", "split_seed", "representation_seed", "balancing_method",
+        "qubo_alpha_multipliers", "qubo_num_reads_per_scale", "qubo_num_sweeps",
+        "qubo_solver_seed_rule", "representation_sha256",
+    ) if key in df.columns]
+    metric_fields = [key for key in (
+        "balanced_accuracy", "precision", "recall", "f1", "roc_auc", "pr_auc",
+    ) if key in df.columns]
+    summary = df.groupby(group_keys, dropna=False)[metric_fields].agg(["mean", "std"])
+    summary.to_csv(summary_path)
+    return output_path, summary_path, summary
+
+
 def set_seed(seed):
     random.seed(seed)
     np.random.seed(seed)
@@ -72,7 +119,7 @@ def set_seed(seed):
 
 
 def load_data(representation_path):
-    representation = load_representation(representation_path)
+    representation = load_stroke_head_representation(representation_path)
 
     H_train, H_val, H_test, transform = standardize_hidden_features(
         representation["H_train"], representation["H_val"], representation["H_test"]
@@ -218,6 +265,9 @@ def main(representation_path=DATA_DIR / "stroke_dfa_representation_seed_42.pt", 
     existing = [path for path in (output_path, summary_path) if Path(path).exists()]
     if existing and not overwrite:
         raise FileExistsError("Refusing to replace existing multi-seed outputs: " + ", ".join(existing) + "; pass --overwrite")
+    seeds = list(SEEDS if seeds is None else seeds)
+    if len(seeds) != len(set(seeds)):
+        raise ValueError("Duplicate head seeds would create duplicate fixed-representation records")
 
     (
         H_train,
@@ -228,8 +278,9 @@ def main(representation_path=DATA_DIR / "stroke_dfa_representation_seed_42.pt", 
         y_test,
         representation
     ) = load_data(representation_path)
-    seeds = list(SEEDS if seeds is None else seeds)
     provenance = representation["data_metadata"]
+    representation_provenance = representation.get("run_provenance", {})
+    run_provenance = collect_run_provenance()
     Path(output_path).parent.mkdir(parents=True, exist_ok=True)
 
     print("H_train:", H_train.shape)
@@ -284,6 +335,7 @@ def main(representation_path=DATA_DIR / "stroke_dfa_representation_seed_42.pt", 
                 "balancing_method": representation["balancing_method"],
                 "experiment_type": "fixed_representation_head_seed_variability",
                 "representation_path": str(representation_path),
+                "representation_sha256": representation.get("representation_sha256", ""),
                 "original_train_class_counts": json.dumps(provenance["original_train_class_counts"], sort_keys=True),
                 "resampled_train_class_counts": json.dumps(provenance["resampled_train_class_counts"], sort_keys=True),
                 "validation_class_counts": json.dumps(provenance["validation_class_counts"], sort_keys=True),
@@ -326,6 +378,7 @@ def main(representation_path=DATA_DIR / "stroke_dfa_representation_seed_42.pt", 
                 "balancing_method": representation["balancing_method"],
                 "experiment_type": "fixed_representation_head_seed_variability",
                 "representation_path": str(representation_path),
+                "representation_sha256": representation.get("representation_sha256", ""),
                 "original_train_class_counts": json.dumps(provenance["original_train_class_counts"], sort_keys=True),
                 "resampled_train_class_counts": json.dumps(provenance["resampled_train_class_counts"], sort_keys=True),
                 "validation_class_counts": json.dumps(provenance["validation_class_counts"], sort_keys=True),
@@ -376,29 +429,14 @@ def main(representation_path=DATA_DIR / "stroke_dfa_representation_seed_42.pt", 
                 "balancing_method": representation["balancing_method"],
                 "experiment_type": "fixed_representation_head_seed_variability",
                 "representation_path": str(representation_path),
+                "representation_sha256": representation.get("representation_sha256", ""),
                 "original_train_class_counts": json.dumps(provenance["original_train_class_counts"], sort_keys=True),
                 "resampled_train_class_counts": json.dumps(provenance["resampled_train_class_counts"], sort_keys=True),
                 "validation_class_counts": json.dumps(provenance["validation_class_counts"], sort_keys=True),
                 "test_class_counts": json.dumps(provenance["test_class_counts"], sort_keys=True),
                 "method": "QUBO Binary",
                 **MULTISEED_METHOD_METADATA["QUBO Binary"],
-                "alpha": qubo_result["alpha"],
-                "base_alpha": qubo_result["base_alpha"],
-                "alpha_multiplier": qubo_result["alpha_multiplier"],
-                "qubo_num_reads_per_scale": qubo_result["qubo_num_reads_per_scale"],
-                "qubo_total_reads": qubo_result["qubo_total_reads"],
-                "qubo_candidate_count": qubo_result["qubo_candidate_count"],
-                "qubo_energy": qubo_result["qubo_energy"],
-                "qubo_candidate_source": qubo_result["qubo_candidate_source"],
-                "qubo_alpha_multipliers": json.dumps(qubo_result["qubo_alpha_multipliers"]),
-                "bias": qubo_result["bias"],
-                "validation_balanced_accuracy": qubo_result["validation_balanced_accuracy"],
-                "validation_selection_score": qubo_result["validation_selection_score"],
-                "validation_f1": qubo_result["validation_f1"],
-                "validation_pr_auc": qubo_result["validation_pr_auc"],
-                "validation_roc_auc": qubo_result["validation_roc_auc"],
-                "hidden_feature_transform": qubo_result["hidden_feature_transform"],
-                "standardized_constant_units": qubo_result["standardized_constant_units"],
+                **qubo_result_columns(qubo_result),
                 **{key: qubo_result[key] for key in qubo_metric_fields},
             }
         )
@@ -412,9 +450,26 @@ def main(representation_path=DATA_DIR / "stroke_dfa_representation_seed_42.pt", 
     # RESULTS
     # ========================================================
 
-    df = pd.DataFrame(results)
+    for row in results:
+        stable_config = {
+            key: row.get(key) for key in (
+                "method_variant", "training_seed", "head_seed", "split_seed",
+                "dataset_sha256", "preprocessing_config_hash", "balancing_method",
+                "representation_sha256",
+                "alpha", "base_alpha", "alpha_multiplier", "qubo_alpha_multipliers",
+                "qubo_num_reads_per_scale", "qubo_num_sweeps", "qubo_solver_seed_selected",
+            ) if key in row
+        }
+        row["run_id"] = stable_run_id(row["experiment_type"], stable_config, run_provenance)
+        row["git_commit_sha"] = run_provenance.get("git_commit_sha", "unavailable")
+        row["git_worktree_dirty"] = run_provenance.get("git_worktree_dirty", "unavailable")
+        row["python_version"] = run_provenance.get("python_version", "unavailable")
+        row["os_platform"] = run_provenance.get("os_platform", "unavailable")
+        row["package_versions_json"] = json.dumps(run_provenance.get("package_versions", {}), sort_keys=True)
+        row["provenance_json"] = json.dumps(run_provenance, sort_keys=True)
+        row["representation_provenance_json"] = json.dumps(representation_provenance, sort_keys=True)
 
-    df.to_csv(output_path, index=False)
+    df = pd.DataFrame(results)
 
     print()
     print("=" * 60)
@@ -427,19 +482,8 @@ def main(representation_path=DATA_DIR / "stroke_dfa_representation_seed_42.pt", 
         )
     )
 
-    summary = (
-        df.groupby("method")
-        [
-            [
-                "balanced_accuracy",
-                "precision",
-                "recall",
-                "f1",
-                "roc_auc",
-                "pr_auc"
-            ]
-        ]
-        .agg(["mean", "std"])
+    _, written_summary_path, summary = write_multiseed_results(
+        output_path, summary_path, results, overwrite=overwrite,
     )
 
     print()
@@ -449,7 +493,6 @@ def main(representation_path=DATA_DIR / "stroke_dfa_representation_seed_42.pt", 
 
     print(summary)
 
-    summary.to_csv(summary_path)
 
     print()
     print(

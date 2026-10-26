@@ -8,6 +8,7 @@ from pathlib import Path
 import numpy as np
 import torch
 from sklearn.model_selection import train_test_split
+from utils.run_provenance import collect_run_provenance
 
 REPRESENTATION_VERSION = "mnist-bnn-dfa-representation-v1"
 DEFAULT_REPRESENTATION_DIR = Path("data/mnist_representations")
@@ -90,6 +91,7 @@ def build_metadata(train_dataset, test_dataset, seed, epochs, validation_fractio
         "representation_layer": "relu(model.fc1(flatten(normalized_image)))",
         "representation_dim": 128,
         "representation_dtype": "float32",
+        "run_provenance": collect_run_provenance(str(device)),
     }
 
 
@@ -102,6 +104,41 @@ def _tensor_digest(data):
         digest.update(np.asarray(tensor.shape, dtype=np.int64).tobytes())
         digest.update(tensor.numpy().tobytes())
     return digest.hexdigest()
+
+
+def _compatibility_metadata(metadata):
+    """Return fields that determine whether frozen features can be reused.
+
+    Git/package/platform provenance and the device used to create an artifact
+    remain bound into its artifact ID, but do not change its dataset/split or
+    declared backbone/training configuration.
+    """
+    compatible = dict(metadata)
+    compatible.pop("run_provenance", None)
+    training = compatible.get("training")
+    if isinstance(training, dict):
+        compatible["training"] = dict(training)
+        compatible["training"].pop("device", None)
+    return compatible
+
+
+def _metadata_mismatch_fields(actual, expected, prefix=""):
+    if isinstance(actual, dict) and isinstance(expected, dict):
+        fields = []
+        for key in sorted(set(actual) | set(expected)):
+            child = f"{prefix}.{key}" if prefix else key
+            if key not in actual or key not in expected:
+                fields.append(child)
+            else:
+                fields.extend(_metadata_mismatch_fields(actual[key], expected[key], child))
+        return fields
+    if isinstance(actual, list) and isinstance(expected, list):
+        if len(actual) == len(expected):
+            fields = []
+            for index, (left, right) in enumerate(zip(actual, expected)):
+                fields.extend(_metadata_mismatch_fields(left, right, f"{prefix}[{index}]"))
+            return fields
+    return [] if actual == expected else [prefix]
 
 
 def representation_path(output_dir, seed, epochs, validation_fraction):
@@ -133,12 +170,30 @@ def save_representation(path, data, metadata):
 
 def load_representation(path, expected_metadata, train_dataset, test_dataset):
     path = Path(path)
-    data = torch.load(path, map_location="cpu", weights_only=False)
-    if data.get("metadata") != expected_metadata:
-        raise ValueError("MNIST representation artifact is incompatible with the requested seed, split, dataset, or backbone configuration")
-    if data.get("representation_sha256") != _tensor_digest(data):
+    try:
+        data = torch.load(path, map_location="cpu", weights_only=False)
+    except Exception as exc:
+        raise ValueError(f"MNIST representation artifact could not be deserialized: {path}") from exc
+    if not isinstance(data, dict):
+        raise ValueError("MNIST representation artifact is malformed: expected a saved dictionary")
+    actual_metadata = data.get("metadata")
+    if not isinstance(actual_metadata, dict):
+        raise ValueError("MNIST representation artifact is malformed: metadata dictionary is missing")
+    mismatch_fields = _metadata_mismatch_fields(
+        _compatibility_metadata(actual_metadata), _compatibility_metadata(expected_metadata),
+    )
+    if mismatch_fields:
+        details = ", ".join(mismatch_fields[:12])
+        if len(mismatch_fields) > 12:
+            details += f", and {len(mismatch_fields) - 12} more"
+        raise ValueError(f"MNIST representation metadata mismatch in: {details}")
+    try:
+        actual_tensor_digest = _tensor_digest(data)
+    except (KeyError, AttributeError, TypeError, RuntimeError) as exc:
+        raise ValueError("MNIST representation artifact is malformed: required feature or label tensors are missing/invalid") from exc
+    if data.get("representation_sha256") != actual_tensor_digest:
         raise ValueError("MNIST representation artifact tensor checksum is invalid")
-    metadata_bytes = json.dumps(expected_metadata, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    metadata_bytes = json.dumps(actual_metadata, sort_keys=True, separators=(",", ":")).encode("utf-8")
     expected_id = hashlib.sha256(metadata_bytes + data["representation_sha256"].encode("ascii")).hexdigest()
     if data.get("artifact_id") != expected_id:
         raise ValueError("MNIST representation artifact identifier is invalid")

@@ -14,7 +14,7 @@ import numpy as np
 import torch
 
 from models.ls_heads import fit_ridge_regression
-from utils.stroke_representation import load_representation
+from utils.stroke_representation import load_stroke_head_representation
 from utils.stroke_binary_features import standardize_hidden_features
 from utils.stroke_metrics import find_best_threshold, calculate_metrics
 from utils.seed import set_seed
@@ -191,7 +191,7 @@ def _fit_candidate(H_train, y_train, H_val, y_val, seed, initialization):
 
 def train_ste_binary(representation_path, seed):
     """Train three STE starts; select by equal-weight validation BA/F1/PR-AUC/ROC-AUC composite."""
-    data = load_representation(representation_path)
+    data = load_stroke_head_representation(representation_path)
     H_train, H_val, H_test, transform = standardize_hidden_features(
         data["H_train"], data["H_val"], data["H_test"]
     )

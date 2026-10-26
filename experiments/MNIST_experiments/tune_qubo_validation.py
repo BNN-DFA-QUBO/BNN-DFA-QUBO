@@ -20,6 +20,7 @@ from models.qubo_head import calculate_ridge_ls_scales, optimize_binary_classifi
 from utils.MNIST.data import get_mnist_loaders
 from utils.MNIST.seed import set_seed
 from utils.MNIST.representation import DEFAULT_REPRESENTATION_DIR
+from utils.run_provenance import collect_run_provenance, stable_run_id
 
 DEFAULT_NUM_READS = (25, 50, 100)
 DEFAULT_NUM_SWEEPS = (250, 500, 1000)
@@ -83,6 +84,7 @@ def tune_from_representations(H_train, y_train, H_val, y_val, seed,
                               num_sweeps_grid=DEFAULT_NUM_SWEEPS,
                               scale_multipliers=DEFAULT_SCALE_MULTIPLIERS):
     """Fit the finite candidate grid from training features and select on validation only."""
+    tuning_started = time.perf_counter()
     configurations = validate_grid(num_reads_grid, num_sweeps_grid, scale_multipliers)
     targets_train = create_binary_targets(y_train, num_classes=10)
     base_scales = calculate_ridge_ls_scales(H_train, y_train, num_classes=10, lambda_relative=1e-4)
@@ -91,52 +93,85 @@ def tune_from_representations(H_train, y_train, H_val, y_val, seed,
     for index, (num_reads, num_sweeps, multiplier) in enumerate(configurations):
         solver_seed = (int(seed) + 1009 * (index + 1)) % (2 ** 32)
         started = time.perf_counter()
-        weights = optimize_binary_classifier(
-            H_train, targets_train, apply_scale_multiplier(base_scales, multiplier),
-            num_classes=10, num_reads=num_reads, num_sweeps=num_sweeps, seed=solver_seed,
-        )
-        weights, final_scales, final_bias = calculate_final_scale_and_bias(
-            H_train, y_train, weights, num_classes=10,
-        )
-        val_scores = H_val.float() @ (weights * final_scales.unsqueeze(0)) + final_bias
         row = {"num_reads": num_reads, "scale_multiplier": multiplier,
-               "num_sweeps": num_sweeps,
-               "solver_seed": solver_seed, "validation_accuracy": _accuracy(val_scores, y_val),
-               "runtime_sec": time.perf_counter() - started,
-               "selected": False, "_weights": weights, "_scales": final_scales,
-               "_bias": final_bias}
+               "num_sweeps": num_sweeps, "solver_seed": solver_seed,
+               "validation_accuracy": "", "selected": False,
+               "status": "failed", "error": "", "runtime_sec": 0.0}
+        try:
+            weights = optimize_binary_classifier(
+                H_train, targets_train, apply_scale_multiplier(base_scales, multiplier),
+                num_classes=10, num_reads=num_reads, num_sweeps=num_sweeps, seed=solver_seed,
+            )
+            weights, final_scales, final_bias = calculate_final_scale_and_bias(
+                H_train, y_train, weights, num_classes=10,
+            )
+            val_scores = H_val.float() @ (weights * final_scales.unsqueeze(0)) + final_bias
+            row.update({"validation_accuracy": _accuracy(val_scores, y_val),
+                        "status": "ok", "_weights": weights,
+                        "_scales": final_scales, "_bias": final_bias})
+        except Exception as exc:
+            row["error"] = f"{type(exc).__name__}: {exc}"
+        row["runtime_sec"] = time.perf_counter() - started
         rows.append(row)
+        validation_text = (f"{row['validation_accuracy']:.2f}%"
+                           if row["status"] == "ok" else f"FAILED ({row['error']})")
         print(f"num_reads={num_reads}, num_sweeps={num_sweeps}, scale_multiplier={multiplier:g}: "
-              f"validation_accuracy={row['validation_accuracy']:.2f}% "
-              f"runtime={row['runtime_sec']:.2f}s")
-    winner = select_configuration(rows)
-    winner["selected"] = True
+              f"validation_accuracy={validation_text} runtime={row['runtime_sec']:.2f}s")
+    successful = [row for row in rows if row["status"] == "ok"]
+    winner = select_configuration(successful) if successful else None
+    tuning_total_seconds = time.perf_counter() - tuning_started
+    if winner is not None:
+        winner["selected"] = True
+        winner["selected_candidate_runtime_sec"] = winner["runtime_sec"]
+        winner["tuning_total_seconds"] = tuning_total_seconds
+    for row in rows:
+        row["tuning_total_seconds"] = tuning_total_seconds
+        row["selected_candidate_runtime_sec"] = (
+            winner["runtime_sec"] if winner is not None and row is winner else ""
+        )
     return winner, rows
 
 
 def write_tuning_csv(rows, seed, epochs, validation_fraction,
                      output_dir=Path("data/results_diagnostic"),
                      representation_artifact_id="", n_train=None,
-                     n_validation=None, n_test=None):
+                     n_validation=None, n_test=None, run_id=None, provenance=None):
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     stamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
     path = output_dir / f"qubo_validation_tuning_27config_seed_{seed}_{stamp}.csv"
-    fields = ["grid_protocol", "seed", "epochs", "validation_fraction", "representation_artifact_id",
+    provenance = provenance or collect_run_provenance()
+    if run_id is None:
+        grid = sorted({(row["num_reads"], row["num_sweeps"], row["scale_multiplier"])
+                       for row in rows})
+        run_id = stable_run_id("mnist_qubo_validation_tuning", {
+            "seed": seed, "epochs": epochs, "validation_fraction": validation_fraction,
+            "representation_artifact_id": representation_artifact_id, "grid": grid,
+        }, provenance)
+    fields = ["run_id", "grid_protocol", "seed", "epochs", "validation_fraction", "representation_artifact_id",
               "n_train", "n_validation", "n_test", "num_reads", "scale_multiplier",
-              "num_sweeps", "solver_seed", "runtime_sec", "validation_accuracy", "selected"]
+              "num_sweeps", "solver_seed", "runtime_sec", "validation_accuracy", "selected",
+              "status", "error", "selected_candidate_runtime_sec", "tuning_total_seconds",
+              "git_commit_sha", "git_worktree_dirty", "python_version", "os_platform", "device",
+              "package_versions_json"]
     with path.open("x", newline="", encoding="utf-8") as handle:
         writer = csv.DictWriter(handle, fieldnames=fields)
         writer.writeheader()
         for row in rows:
-            writer.writerow({"grid_protocol": "fixed_27_configuration_v1",
+            writer.writerow({"run_id": run_id, "grid_protocol": "fixed_27_configuration_v1",
                              "seed": seed, "epochs": epochs,
                              "validation_fraction": validation_fraction,
                              "representation_artifact_id": representation_artifact_id,
                              "n_train": "" if n_train is None else n_train,
                              "n_validation": "" if n_validation is None else n_validation,
                              "n_test": "" if n_test is None else n_test,
-                             **{key: row[key] for key in fields[8:]}})
+                             "git_commit_sha": provenance["git_commit_sha"],
+                             "git_worktree_dirty": provenance["git_worktree_dirty"],
+                             "python_version": provenance["python_version"],
+                             "os_platform": provenance["os_platform"],
+                             "device": provenance["device"],
+                             "package_versions_json": json.dumps(provenance["package_versions"], sort_keys=True),
+                             **{key: row.get(key, "") for key in fields[9:20]}})
     return path
 
 
@@ -165,22 +200,43 @@ def run_tuning(seed=123, epochs=16, num_reads_grid=DEFAULT_NUM_READS,
     H_test, y_test = representation["H_test"], representation["y_test"]
     winner, rows = tune_from_representations(H_train, y_train, H_val, y_val, seed,
                                              num_reads_grid, num_sweeps_grid, scale_multipliers)
-    # Test set is evaluated exactly once, after selection.
-    test_scores = H_test.float() @ (winner["_weights"] * winner["_scales"].unsqueeze(0)) + winner["_bias"]
-    test_accuracy = _accuracy(test_scores, y_test)
-
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     counts = representation["metadata"]["sample_counts"]
+    provenance = collect_run_provenance(str(device))
+    run_id = stable_run_id("mnist_qubo_validation_tuning", {
+        "seed": seed, "epochs": epochs, "validation_fraction": validation_fraction,
+        "representation_artifact_id": representation["artifact_id"],
+        "grid": validate_grid(num_reads_grid, num_sweeps_grid, scale_multipliers),
+    }, provenance)
     csv_path = write_tuning_csv(
         rows, seed, epochs, validation_fraction, output_dir,
         representation["artifact_id"], counts["train"], counts["validation"], counts["test"],
+        run_id=run_id, provenance=provenance,
     )
+    if winner is None:
+        failure_summary = {
+            "run_id": run_id, "candidate_artifact": csv_path.stem, "seed": seed,
+            "epochs": epochs, "validation_fraction": validation_fraction,
+            "representation_artifact_id": representation["artifact_id"],
+            "grid_protocol": "fixed_27_configuration_v1", "status": "all_candidates_failed",
+            "candidate_csv": csv_path.name, "tuning_total_seconds": max(
+                (float(row.get("tuning_total_seconds", 0.0)) for row in rows), default=0.0
+            ), "provenance": provenance,
+        }
+        json_path = output_dir / f"{csv_path.stem}.json"
+        with json_path.open("x", encoding="utf-8") as handle:
+            json.dump(failure_summary, handle, indent=2)
+        raise RuntimeError(f"All MNIST QUBO tuning candidates failed; artifacts: {csv_path}, {json_path}")
+
+    # Test set is evaluated exactly once, after selection and candidate artifact persistence.
+    test_scores = H_test.float() @ (winner["_weights"] * winner["_scales"].unsqueeze(0)) + winner["_bias"]
+    test_accuracy = _accuracy(test_scores, y_test)
     # Match the CSV stem in the optional JSON summary for this run.
     stem = csv_path.stem
     json_path = output_dir / f"{stem}.json"
     summary = {
-        "run_id": stem, "seed": seed, "epochs": epochs,
+        "run_id": run_id, "candidate_artifact": stem, "seed": seed, "epochs": epochs,
         "validation_fraction": validation_fraction,
         "representation_artifact_id": representation["artifact_id"],
         "representation_path": str(representation_path.resolve()),
@@ -195,6 +251,9 @@ def run_tuning(seed=123, epochs=16, num_reads_grid=DEFAULT_NUM_READS,
         "selection_metric": "validation_accuracy_percent",
         "selection_value": winner["validation_accuracy"],
         "test_accuracy_percent": test_accuracy,
+        "tuning_total_seconds": winner["tuning_total_seconds"],
+        "selected_candidate_runtime_sec": winner["runtime_sec"],
+        "provenance": provenance,
         "solver_seed_rule": "(backbone_seed + 1009 * (grid_index + 1)) mod 2**32",
         "tie_break_order": ["highest validation accuracy", "fewest num_reads",
                             "scale_multiplier closest to 1.0", "fewest num_sweeps",

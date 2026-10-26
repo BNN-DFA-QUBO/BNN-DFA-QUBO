@@ -1,6 +1,7 @@
 """Fast unit tests for the bounded MNIST QUBO tuning helpers."""
 import argparse
 import csv
+import itertools
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -21,6 +22,17 @@ from experiments.MNIST_experiments.tune_qubo_validation import (
 from experiments.MNIST_experiments.bnn_dfa_qubo import _append_qubo_result
 import experiments.MNIST_experiments.tune_qubo_validation as tuning
 from models.qubo_head import optimize_binary_class, optimize_binary_classifier
+
+
+class FakeIsingResponse:
+    def __init__(self, samples, variables=None):
+        self.variables = list(range(len(samples[0]))) if variables is None and samples else list(variables or [])
+        import numpy as np
+        self.record = mock.Mock(sample=np.asarray(samples, dtype=float), energy=np.zeros(len(samples)))
+        self.first = mock.Mock(sample={v: samples[0][i] for i, v in enumerate(self.variables)} if samples else {})
+
+    def __len__(self):
+        return len(self.record.sample)
 
 
 class QuboValidationTuningTests(unittest.TestCase):
@@ -78,15 +90,29 @@ class QuboValidationTuningTests(unittest.TestCase):
         ]
         self.assertIs(select_configuration(rows), rows[1])
 
+    def test_all_failed_candidates_return_complete_diagnostic_rows(self):
+        from contextlib import redirect_stdout
+        from io import StringIO
+        with mock.patch.object(tuning, "calculate_ridge_ls_scales", return_value=torch.ones(10)), \
+             mock.patch.object(tuning, "optimize_binary_classifier", side_effect=RuntimeError("solver failed")), \
+             redirect_stdout(StringIO()):
+            winner, rows = tuning.tune_from_representations(
+                torch.zeros(4, 2), torch.tensor([0, 1, 0, 1]),
+                torch.zeros(2, 2), torch.tensor([0, 1]), seed=9,
+            )
+        self.assertIsNone(winner)
+        self.assertEqual(len(rows), 27)
+        self.assertTrue(all(row["status"] == "failed" for row in rows))
+        self.assertTrue(all(row["runtime_sec"] >= 0 for row in rows))
+        self.assertTrue(all(row["tuning_total_seconds"] >= 0 for row in rows))
+
     def test_accuracy_helper_scores_only_the_supplied_split(self):
         scores = torch.tensor([[2., 0.], [0., 2.]])
         labels = torch.tensor([0, 0])
         self.assertEqual(_accuracy(scores, labels), 50.0)
 
     def test_num_sweeps_reaches_the_neal_sample_ising_api(self):
-        response = mock.MagicMock()
-        response.__len__.return_value = 1
-        response.first.sample = {0: 1, 1: -1}
+        response = FakeIsingResponse([[1, -1]])
         with mock.patch("models.qubo_head.neal.SimulatedAnnealingSampler") as sampler_type:
             sampler_type.return_value.sample_ising.return_value = response
             result = optimize_binary_class(
@@ -109,6 +135,12 @@ class QuboValidationTuningTests(unittest.TestCase):
             {"num_sweeps": 0},
             {"num_sweeps": -1},
             {"num_sweeps": 2.5},
+            {"num_reads": True},
+            {"num_sweeps": False},
+            {"alpha": 0.0},
+            {"seed": True},
+            {"seed": -1},
+            {"seed": 2 ** 32},
             {"alpha": float("nan")},
             {"alpha": float("inf")},
             {"alpha": -float("inf")},
@@ -117,33 +149,44 @@ class QuboValidationTuningTests(unittest.TestCase):
             arguments = {"alpha": 0.2, "num_reads": 5, "num_sweeps": 10}
             arguments.update(overrides)
             with self.subTest(overrides=overrides):
-                with self.assertRaisesRegex(ValueError, "num_reads|num_sweeps|alpha"):
+                with self.assertRaisesRegex(ValueError, "num_reads|num_sweeps|alpha|seed"):
                     optimize_binary_class(valid_H, valid_target, **arguments)
 
     def test_optimizer_rejects_empty_solver_response(self):
-        response = mock.MagicMock()
-        response.__len__.return_value = 0
+        response = FakeIsingResponse([])
         with mock.patch("models.qubo_head.neal.SimulatedAnnealingSampler") as sampler_type:
             sampler_type.return_value.sample_ising.return_value = response
             with self.assertRaisesRegex(RuntimeError, "returned no samples"):
                 optimize_binary_class(torch.zeros(3, 2), torch.ones(3), alpha=0.2)
 
     def test_optimizer_rejects_missing_solver_variables(self):
-        response = mock.MagicMock()
-        response.__len__.return_value = 1
-        response.first.sample = {0: 1}
+        response = FakeIsingResponse([[1]], variables=[0])
         with mock.patch("models.qubo_head.neal.SimulatedAnnealingSampler") as sampler_type:
             sampler_type.return_value.sample_ising.return_value = response
-            with self.assertRaisesRegex(RuntimeError, "missing variables: \\[1\\]"):
+            with self.assertRaisesRegex(RuntimeError, "missing expected variables: \\[1\\]"):
                 optimize_binary_class(torch.zeros(3, 2), torch.ones(3), alpha=0.2)
 
     def test_optimizer_rejects_non_bipolar_solver_values(self):
-        response = mock.MagicMock()
-        response.__len__.return_value = 1
-        response.first.sample = {0: 1, 1: 0}
+        response = FakeIsingResponse([[1, 0]])
         with mock.patch("models.qubo_head.neal.SimulatedAnnealingSampler") as sampler_type:
             sampler_type.return_value.sample_ising.return_value = response
-            with self.assertRaisesRegex(RuntimeError, "non-bipolar values"):
+            with self.assertRaisesRegex(RuntimeError, "invalid bipolar spins"):
+                optimize_binary_class(torch.zeros(3, 2), torch.ones(3), alpha=0.2)
+
+    def test_optimizer_rejects_invalid_spins_in_nonwinning_solver_samples(self):
+        response = FakeIsingResponse([[1, -1], [-1, 0]])
+        with mock.patch("models.qubo_head.neal.SimulatedAnnealingSampler") as sampler_type:
+            sampler_type.return_value.sample_ising.return_value = response
+            with self.assertRaisesRegex(RuntimeError, "sample 1"):
+                optimize_binary_class(torch.zeros(3, 2), torch.ones(3), alpha=0.2)
+
+    def test_qubo_rejects_nonfinite_derived_coefficients_and_contextualizes_solver_errors(self):
+        H = torch.tensor([[1e308, 0.0], [-1e308, 1.0]], dtype=torch.float64)
+        with self.assertRaisesRegex(ValueError, "overflow|non-finite"):
+            optimize_binary_class(H, torch.tensor([-1.0, 1.0]), alpha=0.5)
+        with mock.patch("models.qubo_head.neal.SimulatedAnnealingSampler") as sampler_type:
+            sampler_type.return_value.sample_ising.side_effect = OSError("sampler down")
+            with self.assertRaisesRegex(RuntimeError, "MNIST QUBO"):
                 optimize_binary_class(torch.zeros(3, 2), torch.ones(3), alpha=0.2)
 
     def test_tuned_result_records_sum_of_candidate_runtime(self):

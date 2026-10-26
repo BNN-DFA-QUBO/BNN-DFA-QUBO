@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import json
 from datetime import datetime
 from pathlib import Path
 
@@ -110,7 +111,9 @@ def _persist_selected_qubo_result(*, seed, test_accuracy, winner, tuning_rows,
         seed=seed,
         test_accuracy=test_accuracy,
         parameter_count=metadata.get("backbone_parameter_count"),
-        qubo_time_sec=sum(row.get("runtime_sec", 0.0) for row in tuning_rows),
+        qubo_time_sec=winner.get("tuning_total_seconds",
+                                  sum(row.get("runtime_sec", 0.0) for row in tuning_rows)),
+        qubo_selected_candidate_time_sec=winner.get("runtime_sec"),
         qubo_tuning_enabled=True,
         qubo_num_reads_selected=winner["num_reads"],
         qubo_num_sweeps_selected=winner["num_sweeps"],
@@ -124,6 +127,10 @@ def _persist_selected_qubo_result(*, seed, test_accuracy, winner, tuning_rows,
         representation_artifact_id=representation["artifact_id"],
         representation_path=str(representation_path.resolve()),
         representation_cache_status=representation_source,
+        dataset_fingerprint=metadata.get("dataset_fingerprint", ""),
+        split_protocol=metadata.get("split_protocol", ""),
+        representation_sha256=representation.get("representation_sha256", ""),
+        backbone_training_json=json.dumps(metadata.get("training", {}), sort_keys=True),
         n_train=counts["train"],
         n_validation=counts["validation"],
         n_test=counts["test"],
@@ -213,6 +220,13 @@ def main():
             H_train, y_train, H_val, y_val, seed,
             args.num_reads_grid, args.num_sweeps_grid, args.scale_multipliers,
         )
+        if tuning_winner is None:
+            failure_path = write_tuning_csv(
+                tuning_rows, seed, args.epochs, args.validation_fraction,
+                Path("data/results_diagnostic"), artifact_id, sample_counts["train"],
+                sample_counts["validation"], sample_counts["test"],
+            )
+            raise RuntimeError(f"All QUBO candidates failed; validation diagnostics saved to {failure_path}")
         qubo_w, qubo_scale, qubo_bias = (
             tuning_winner["_weights"], tuning_winner["_scales"], tuning_winner["_bias"]
         )

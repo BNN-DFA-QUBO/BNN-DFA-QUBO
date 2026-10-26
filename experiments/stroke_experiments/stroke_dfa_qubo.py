@@ -20,7 +20,7 @@ import torch
 import neal
 
 from models.ls_heads import fit_ridge_regression
-from utils.stroke_representation import load_representation
+from utils.stroke_representation import load_stroke_head_representation
 from utils.stroke_binary_features import standardize_hidden_features
 from utils.stroke_metrics import find_best_threshold, calculate_metrics
 from utils.seed import set_seed
@@ -46,8 +46,12 @@ def build_ising_model(H, target, alpha):
     H_centered = H64 - H64.mean(dim=0, keepdim=True)
     target_centered = target64 - target64.mean()
     gram = H_centered.T @ H_centered
+    if not torch.isfinite(gram).all():
+        raise ValueError("QUBO coefficient construction overflowed while computing the feature Gram matrix")
     quadratic = (float(alpha) ** 2) * gram
     linear = -2.0 * float(alpha) * (H_centered.T @ target_centered)
+    if not torch.isfinite(quadratic).all() or not torch.isfinite(linear).all():
+        raise ValueError("QUBO coefficient construction produced non-finite linear or quadratic coefficients")
 
     hidden_size = H64.shape[1]
     h = {i: float(linear[i].item()) for i in range(hidden_size)}
@@ -184,9 +188,12 @@ def optimize_binary_class(H, target, alpha, num_reads, seed, num_sweeps=QUBO_NUM
     seed = _validate_seed(seed)
     alpha = _validate_positive_real(alpha, "alpha")
     h, J = build_ising_model(H, target, alpha)
-    response = neal.SimulatedAnnealingSampler().sample_ising(
-        h, J, num_reads=num_reads, num_sweeps=num_sweeps, seed=seed
-    )
+    try:
+        response = neal.SimulatedAnnealingSampler().sample_ising(
+            h, J, num_reads=num_reads, num_sweeps=num_sweeps, seed=seed
+        )
+    except Exception as exc:
+        raise RuntimeError("simulated annealing failed while sampling the Stroke QUBO Ising model") from exc
     expected_variables = list(range(torch.as_tensor(H).shape[1]))
     _validate_solver_response(response, expected_variables, "simulated annealing")
     try:
@@ -248,18 +255,18 @@ def sample_binary_candidates(
     ridge_seed = _binary_sign(ridge_coefficients, class_mean_direction)
 
     for scale_index, multiplier in enumerate(alpha_multipliers):
-        multiplier = float(multiplier)
         multiplier = _validate_positive_real(multiplier, "QUBO alpha multiplier")
         alpha = float(base_alpha) * multiplier
         h, J = build_ising_model(H_cpu, target_cpu, alpha)
         solver_seed = (seed + 104729 * scale_index) % (_MAX_SOLVER_SEED + 1)
-        response = sampler.sample_ising(
-            h,
-            J,
-            num_reads=num_reads,
-            num_sweeps=num_sweeps,
-            seed=solver_seed,
-        )
+        try:
+            response = sampler.sample_ising(
+                h, J, num_reads=num_reads, num_sweeps=num_sweeps, seed=solver_seed,
+            )
+        except Exception as exc:
+            raise RuntimeError(
+                f"simulated annealing failed for alpha_multiplier={multiplier:g}, scale_index={scale_index}"
+            ) from exc
         response_variables, samples = _validate_solver_response(
             response, list(range(hidden_size)), "simulated annealing"
         )
@@ -369,7 +376,7 @@ def recover_bias(H, target, weights, alpha):
 def train_qubo(representation_path, seed):
     set_seed(seed)
     qubo_search_started = time.perf_counter()
-    data = load_representation(representation_path)
+    data = load_stroke_head_representation(representation_path)
     H_train, H_val, H_test, transform = standardize_hidden_features(
         data["H_train"], data["H_val"], data["H_test"]
     )
@@ -438,6 +445,8 @@ def train_qubo(representation_path, seed):
 
     test_scores = best["alpha"] * (H_test @ best["weights"]) + best["bias"]
     metrics = calculate_metrics(y_test.numpy(), test_scores.numpy(), best["threshold"])
+    selected_scale_index = list(QUBO_ALPHA_MULTIPLIERS).index(float(best["candidate"]["alpha_multiplier"]))
+    selected_solver_seed = (int(seed) + 104729 * selected_scale_index) % (_MAX_SOLVER_SEED + 1)
     return {
         "method": "QUBO Binary",
         "seed": int(data.get("training_seed", data.get("seed", seed))),
@@ -456,7 +465,11 @@ def train_qubo(representation_path, seed):
         "qubo_num_reads": QUBO_NUM_READS,
         "qubo_num_reads_per_scale": QUBO_NUM_READS,
         "qubo_num_sweeps": QUBO_NUM_SWEEPS,
+        "qubo_solver_seed_base": int(seed),
+        "qubo_solver_seed_selected": int(selected_solver_seed),
+        "qubo_solver_seed_rule": "(head_seed + 104729 * alpha_grid_index) mod 2**32",
         "qubo_random_seed_starts": QUBO_RANDOM_SEED_STARTS,
+        "qubo_top_candidates_per_scale": QUBO_TOP_CANDIDATES_PER_SCALE,
         "qubo_total_reads": QUBO_NUM_READS * len(QUBO_ALPHA_MULTIPLIERS),
         "qubo_alpha_multipliers": list(QUBO_ALPHA_MULTIPLIERS),
         "qubo_candidate_count": len(candidates),

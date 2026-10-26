@@ -8,7 +8,7 @@ sys.path.append(
 import numpy as np
 import torch
 
-from utils.stroke_representation import load_representation
+from utils.stroke_representation import load_stroke_head_representation
 from utils.stroke_binary_features import standardize_hidden_features
 from utils.stroke_metrics import (
     find_best_threshold,
@@ -23,7 +23,7 @@ def train_direct_binary(
 ):
     set_seed(seed)
 
-    data = load_representation(
+    data = load_stroke_head_representation(
         representation_path
     )
 

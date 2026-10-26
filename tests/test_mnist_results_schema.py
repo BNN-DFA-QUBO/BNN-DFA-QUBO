@@ -18,9 +18,12 @@ class MnistResultsSchemaTests(unittest.TestCase):
             representation_path = Path(temp) / "representation.pt"
             representation = {
                 "artifact_id": "artifact-42",
+                "representation_sha256": "sha-42",
                 "metadata": {
                     "backbone_parameter_count": 12345,
                     "sample_counts": {"train": 51000, "validation": 9000, "test": 10000},
+                    "dataset_fingerprint": "dataset-42", "split_protocol": "stratified-v1",
+                    "training": {"epochs": 16, "seed": 42},
                 },
             }
             winner = {
@@ -64,6 +67,9 @@ class MnistResultsSchemaTests(unittest.TestCase):
             self.assertEqual(row["qubo_grid_size"], "27")
             self.assertEqual(row["qubo_grid_protocol"], "fixed_27_configuration_v1")
             self.assertEqual(row["representation_artifact_id"], "artifact-42")
+            self.assertEqual(row["representation_sha256"], "sha-42")
+            self.assertEqual(row["dataset_fingerprint"], "dataset-42")
+            self.assertEqual(row["split_protocol"], "stratified-v1")
             self.assertEqual(row["n_train"], "51000")
             self.assertEqual(row["n_validation"], "9000")
             self.assertEqual(row["n_test"], "10000")

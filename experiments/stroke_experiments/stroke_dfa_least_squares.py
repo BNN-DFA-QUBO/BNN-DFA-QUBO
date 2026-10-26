@@ -4,7 +4,7 @@ from pathlib import Path
 
 import torch
 
-from utils.stroke_representation import load_representation
+from utils.stroke_representation import load_stroke_head_representation
 from utils.stroke_data import DATA_DIR
 from utils.stroke_metrics import find_best_threshold, calculate_metrics
 
@@ -18,7 +18,7 @@ def fit_signed_least_squares(hidden, labels):
 
 
 def train_signed_least_squares(representation_path):
-    data = load_representation(representation_path)
+    data = load_stroke_head_representation(representation_path)
     weights = fit_signed_least_squares(data["H_train"], data["y_train"])
     val_design = torch.cat((data["H_val"].float(), torch.ones(len(data["H_val"]), 1)), dim=1)
     test_design = torch.cat((data["H_test"].float(), torch.ones(len(data["H_test"]), 1)), dim=1)

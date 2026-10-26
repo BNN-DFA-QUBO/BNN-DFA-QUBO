@@ -8,7 +8,7 @@ sys.path.append(
 import numpy as np
 import torch
 
-from utils.stroke_representation import load_representation
+from utils.stroke_representation import load_stroke_head_representation
 from utils.stroke_data import DATA_DIR
 from utils.stroke_metrics import (
     find_best_threshold,
@@ -17,7 +17,7 @@ from utils.stroke_metrics import (
 
 
 def train_real_ls(representation_path):
-    data = load_representation(
+    data = load_stroke_head_representation(
         representation_path
     )
 

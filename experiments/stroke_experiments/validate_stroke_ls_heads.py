@@ -19,7 +19,7 @@ import numpy as np
 import torch
 
 from models.ls_heads import fit_ridge_regression
-from utils.stroke_config import BALANCING_METHOD, SEEDS, SPLIT_SEED
+from utils.stroke_config import BATCH_SIZE, HIDDEN_SIZE, LEARNING_RATE, TRAIN_EPOCHS, BALANCING_METHOD, SEEDS, SPLIT_SEED
 from utils.stroke_data import DATA_DIR
 from utils.stroke_metrics import calculate_metrics, find_best_threshold
 from utils.stroke_representation import load_representation, save_representation
@@ -114,6 +114,13 @@ def evaluate_scores(y_val, validation_scores, y_test, test_scores):
 
 
 def load_or_train_representation(seed, args, artifacts_dir):
+    expected_training_config = {
+        "hidden_size": HIDDEN_SIZE,
+        "batch_size": BATCH_SIZE,
+        "epochs": TRAIN_EPOCHS,
+        "learning_rate": LEARNING_RATE,
+        "loss": "BCEWithLogitsLoss(reduction='mean', pos_weight=None)",
+    }
     if args.representation_dir is not None:
         representation_path = (
             Path(args.representation_dir) / f"stroke_dfa_representation_seed_{seed}.pt"
@@ -123,7 +130,11 @@ def load_or_train_representation(seed, args, artifacts_dir):
                 f"Missing representation for seed {seed}: {representation_path}. "
                 "Omit --representation-dir to train fresh representations."
             )
-        data = load_representation(representation_path)
+        data = load_representation(
+            representation_path, expected_seed=seed,
+            expected_training_config=expected_training_config,
+            expected_hidden_size=HIDDEN_SIZE,
+        )
         metadata = data.get("data_metadata", {})
         if int(data.get("split_seed", -1)) != args.split_seed:
             raise ValueError(
@@ -146,7 +157,11 @@ def load_or_train_representation(seed, args, artifacts_dir):
         output_dir=artifacts_dir,
     )
     save_representation(result, str(representation_path), feature_names=result["feature_names"])
-    data = load_representation(representation_path)
+    data = load_representation(
+        representation_path, expected_seed=seed,
+        expected_training_config=expected_training_config,
+        expected_hidden_size=HIDDEN_SIZE,
+    )
     return representation_path, data, "trained"
 
 

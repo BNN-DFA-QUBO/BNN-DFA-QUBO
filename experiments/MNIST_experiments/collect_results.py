@@ -34,9 +34,35 @@ def main():
         if col in df:
             df[col] = pd.to_numeric(df[col], errors="coerce")
 
-    # Main results: mean ± std over seeds when multiple seeds exist.
+    tables = build_aggregate_tables(df)
+    paths = [OUT / name for name in (
+        "main_classification_results.csv", "computational_cost_results.csv",
+        "platform_reproducibility_results.csv",
+    ) if name != "platform_reproducibility_results.csv" or "platform" in df.columns]
+    existing = [str(path) for path in paths if path.exists()]
+    if existing:
+        raise FileExistsError("Refusing to replace aggregate result tables: " + ", ".join(existing))
+    for name, table in tables.items():
+        table.to_csv(OUT / name, index=False, mode="x")
+
+    print(f"Saved result tables in {OUT}")
+
+
+def build_aggregate_tables(df):
+    """Build summaries without pooling incompatible result protocols/configurations."""
+    protocol_keys = [key for key in (
+        "experiment_type", "qubo_grid_protocol", "qubo_num_reads_selected",
+        "qubo_num_sweeps_selected", "qubo_scale_multiplier_selected",
+        "qubo_selection_metric", "validation_fraction", "preprocessing_version",
+        "split_seed", "balancing_method",
+    ) if key in df.columns]
+    group_keys = [key for key in ("experiment", "method", *protocol_keys) if key in df.columns]
+    if not group_keys:
+        raise ValueError("Results must include at least one experiment/method grouping column")
+
+    # Main results: mean ± std over compatible protocol/configuration groups.
     main = (
-        df.groupby(["experiment", "method"], dropna=False)["test_accuracy"]
+        df.groupby(group_keys, dropna=False)["test_accuracy"]
         .agg(["count", "mean", "std", "min", "max"])
         .reset_index()
         .rename(
@@ -49,11 +75,9 @@ def main():
             }
         )
     )
-    main.to_csv(OUT / "main_classification_results.csv", index=False)
-
     # Computational-cost summary.
     cost = (
-        df.groupby(["experiment", "method"], dropna=False)
+        df.groupby(group_keys, dropna=False)
         .agg(
             accuracy_mean=("test_accuracy", "mean"),
             accuracy_std=("test_accuracy", "std"),
@@ -63,19 +87,20 @@ def main():
         )
         .reset_index()
     )
-    cost.to_csv(OUT / "computational_cost_results.csv", index=False)
-
+    tables = {
+        "main_classification_results.csv": main,
+        "computational_cost_results.csv": cost,
+    }
     # Platform-specific reproducibility summary.
     if "platform" in df.columns:
         repro = (
-            df.groupby(["experiment", "method", "platform"], dropna=False)
+            df.groupby([*group_keys, "platform"], dropna=False)
             ["test_accuracy"]
             .agg(["count", "mean", "std", "min", "max"])
             .reset_index()
         )
-        repro.to_csv(OUT / "platform_reproducibility_results.csv", index=False)
-
-    print(f"Saved result tables in {OUT}")
+        tables["platform_reproducibility_results.csv"] = repro
+    return tables
 
 
 if __name__ == "__main__":

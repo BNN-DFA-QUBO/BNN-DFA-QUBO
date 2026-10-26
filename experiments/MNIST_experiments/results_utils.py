@@ -7,12 +7,15 @@ Use it to record final metrics without changing model implementations.
 from __future__ import annotations
 
 import csv
+import json
 import os
 import platform
 import tempfile
 import time
 from pathlib import Path
 from typing import Any
+
+from utils.run_provenance import collect_run_provenance, stable_run_id
 
 try:
     import torch
@@ -67,6 +70,7 @@ def append_result(
     training_time_sec: float | None = None,
     parameter_count: int | None = None,
     qubo_time_sec: float | None = None,
+    qubo_selected_candidate_time_sec: float | None = None,
     notes: str = "",
     qubo_tuning_enabled: bool = False,
     qubo_num_reads_selected: int | None = None,
@@ -84,11 +88,29 @@ def append_result(
     n_train: int | None = None,
     n_validation: int | None = None,
     n_test: int | None = None,
+    dataset_fingerprint: str = "",
+    split_protocol: str = "",
+    representation_sha256: str = "",
+    backbone_training_json: str = "",
+    run_id: str | None = None,
+    provenance: dict | None = None,
 ) -> None:
     """Append one final MNIST result to the shared CSV."""
     RESULTS_CSV.parent.mkdir(parents=True, exist_ok=True)
 
+    provenance = provenance or collect_run_provenance(get_device_name())
+    configuration = {
+        "experiment": experiment, "method": method, "seed": seed,
+        "qubo_tuning_enabled": qubo_tuning_enabled,
+        "qubo_num_reads_selected": qubo_num_reads_selected,
+        "qubo_num_sweeps_selected": qubo_num_sweeps_selected,
+        "qubo_scale_multiplier_selected": qubo_scale_multiplier_selected,
+        "qubo_validation_fraction": qubo_validation_fraction,
+        "representation_artifact_id": representation_artifact_id,
+    }
+    run_id = run_id or stable_run_id(experiment, configuration, provenance)
     row = {
+        "run_id": run_id,
         "experiment": experiment,
         "method": method,
         "seed": seed if seed is not None else "",
@@ -99,6 +121,7 @@ def append_result(
         "training_time_sec": "" if training_time_sec is None else training_time_sec,
         "parameter_count": "" if parameter_count is None else parameter_count,
         "qubo_time_sec": "" if qubo_time_sec is None else qubo_time_sec,
+        "qubo_selected_candidate_time_sec": "" if qubo_selected_candidate_time_sec is None else qubo_selected_candidate_time_sec,
         "qubo_tuning_enabled": qubo_tuning_enabled,
         "qubo_num_reads_selected": "" if qubo_num_reads_selected is None else qubo_num_reads_selected,
         "qubo_num_sweeps_selected": "" if qubo_num_sweeps_selected is None else qubo_num_sweeps_selected,
@@ -112,9 +135,21 @@ def append_result(
         "representation_artifact_id": representation_artifact_id,
         "representation_path": representation_path,
         "representation_cache_status": representation_cache_status,
+        "representation_sha256": representation_sha256,
+        "dataset_fingerprint": dataset_fingerprint,
+        "split_protocol": split_protocol,
+        "backbone_training_json": backbone_training_json,
         "n_train": "" if n_train is None else n_train,
         "n_validation": "" if n_validation is None else n_validation,
         "n_test": "" if n_test is None else n_test,
+        "git_commit_sha": provenance.get("git_commit_sha", "unavailable"),
+        "git_worktree_dirty": provenance.get("git_worktree_dirty", "unavailable"),
+        "git_worktree_fingerprint": provenance.get("git_worktree_fingerprint", "unavailable"),
+        "python_version": provenance.get("python_version", "unavailable"),
+        "os_platform": provenance.get("os_platform", "unavailable"),
+        "device": provenance.get("device", get_device_name()),
+        "package_versions_json": json.dumps(provenance.get("package_versions", {}), sort_keys=True),
+        "provenance_json": json.dumps(provenance, sort_keys=True),
         "notes": notes,
     }
 
@@ -129,6 +164,8 @@ def append_result(
             reader = csv.DictReader(current)
             old_fields = list(reader.fieldnames or [])
             historical_rows = list(reader)
+        if "run_id" in old_fields and any(existing.get("run_id") == run_id for existing in historical_rows):
+            raise FileExistsError(f"Refusing duplicate MNIST result append for run_id={run_id}")
         fieldnames = old_fields + [name for name in fieldnames if name not in old_fields]
         if fieldnames != old_fields:
             temp_name = None

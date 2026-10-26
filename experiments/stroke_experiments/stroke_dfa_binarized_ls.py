@@ -16,7 +16,7 @@ import torch
 
 from models.ls_heads import fit_ridge_regression
 from utils.stroke_binary_features import standardize_hidden_features
-from utils.stroke_representation import load_representation
+from utils.stroke_representation import load_stroke_head_representation
 from utils.stroke_data import DATA_DIR
 from utils.stroke_metrics import find_best_threshold, calculate_metrics
 
@@ -80,7 +80,7 @@ def train_binarized_ls(representation_path, ls_solver="ridge", lambda_relative=1
     if not np.isfinite(lambda_relative) or lambda_relative < 0:
         raise ValueError("lambda_relative must be finite and >= 0")
 
-    data = load_representation(representation_path)
+    data = load_stroke_head_representation(representation_path)
     if ls_solver == "ridge":
         H_train_t, H_val_t, H_test_t, transform = standardize_hidden_features(
             data["H_train"], data["H_val"], data["H_test"]

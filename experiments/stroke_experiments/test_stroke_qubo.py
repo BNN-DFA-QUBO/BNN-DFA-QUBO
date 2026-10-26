@@ -199,7 +199,7 @@ class StrokeQuboValidationTests(unittest.TestCase):
             return candidates
 
         with mock.patch.object(qubo, "set_seed"), \
-             mock.patch.object(qubo, "load_representation", return_value=data), \
+             mock.patch.object(qubo, "load_stroke_head_representation", return_value=data), \
              mock.patch.object(qubo, "standardize_hidden_features",
                                return_value=(H_train, H_val, H_test, {"transform": "test", "constant_units": 0})), \
              mock.patch.object(qubo, "calculate_alpha", return_value=1.0), \

@@ -128,12 +128,19 @@ The repository provides several experiment runners and validation scripts in `ex
   - Official MNIST test set (N_test = 10,000) is evaluated **only once** for final reporting.
 - **Command-line Interface:**
   ```powershell
-  # Default: 27-configuration validation tuning for QUBO
-  .\.venv\Scripts\python.exe -m experiments.MNIST_experiments.run_mnist_shared_validation --seed 42 --epochs 16
+  # One-seed pilot, with isolated cache and result output
+  $stamp = Get-Date -Format "yyyyMMdd_HHmmss"
+  $env:BNN_DFA_RESULTS_CSV = "data/results_diagnostic/mnist_shared_validation_pilot_seed_42_$stamp.csv"
+  .\.venv\Scripts\python.exe -m experiments.MNIST_experiments.run_mnist_shared_validation --seed 42 --epochs 16 --validation-fraction 0.15 --representation-dir data/mnist_representations/pilot_seed_42
+  Remove-Item Env:BNN_DFA_RESULTS_CSV
 
   # Or with historical fixed 100 reads (no validation grid tuning)
-  .\.venv\Scripts\python.exe -m experiments.MNIST_experiments.run_mnist_shared_validation --seed 42 --epochs 16 --fixed-qubo --num-reads 100
+  .\.venv\Scripts\python.exe -m experiments.MNIST_experiments.run_mnist_shared_validation --seed 42 --epochs 16 --fixed-qubo --num-reads 100 --representation-dir data/mnist_representations/pilot_seed_42
   ```
+- **Prerequisites:** Run from the repository root with the project environment and dependencies installed (for Windows PowerShell, `.\.venv\Scripts\python.exe`). The first run downloads MNIST only if it is not already present under `data/MNIST/`; network access is therefore needed only for that initial dataset acquisition. No special accelerator is required by the CLI.
+- **Representation cache:** `--representation-dir` is a directory containing a cache keyed by seed, backbone epochs, and validation fraction. Compatible artifacts are reused after checking dataset fingerprint, split indices, seed, backbone/training settings, tensor checksums, and label alignment. Git/package provenance and the artifact-generation device remain bound to the saved artifact ID but do not invalidate otherwise compatible features. A missing artifact is trained and saved with create-only semantics.
+- **Cache recovery:** An incompatible or corrupted artifact is never overwritten or silently accepted. The error lists metadata fields that differ and prints a command using a fresh `--representation-dir`. For example, keep the original cache and retry with `--representation-dir data/mnist_representations/pilot_seed_42_rebuild`. You can also use the fresh directory printed by the error. Leave the old artifact in place for inspection.
+- **Pilot versus study:** The command above is one seed for onboarding and pipeline validation. It is not the final multi-seed research protocol. For a study, run the prespecified seeds with a separate seed-specific representation directory for each seed, retain raw per-seed outputs, and aggregate only compatible runs.
 - **Outputs Produced:**
   - Diagnostic comparison table: `data/results_diagnostic/shared_validation_heads_<protocol>_seed_<seed>_<timestamp>.csv`
   - QUBO tuning log: `data/results_diagnostic/qubo_validation_tuning_27config_seed_<seed>_<timestamp>.csv`
@@ -171,6 +178,16 @@ The repository provides several experiment runners and validation scripts in `ex
 - `compare_ls_binary_qubo_shared.py`: Compares Ridge LS, Binarized Ridge LS, and QUBO Binary on a single representation (`--seed`, `--epochs`, `--num-reads`, `--fixed-qubo`).
 - `sweep_qubo_num_reads_shared.py`: Evaluates the impact of different QUBO read counts (`--reads 25 50 100 200`) across seeds on shared frozen features. Saves detailed and aggregate CSVs to `data/results_diagnostic/`.
 - `results_utils.py`: Central helper managing schema upgrades and thread-safe writes to `data/results/mnist_results.csv` (redirectable via `$env:BNN_DFA_RESULTS_CSV`).
+
+#### Protocol and integrity notes
+
+- The individual MNIST scripts are independent end-to-end runs; `run_mnist_shared_validation.py` is a head-only comparison on one frozen, split-aligned representation per seed. Stroke `run_stroke_controlled.py` trains one shared representation per model seed and compares heads; `stroke_binary_head_multiseed.py` varies head seeds on a fixed representation. Do not combine these protocols in one mean or claim a shared seed proves identical features.
+- MNIST `tune_qubo_validation.py` is the selection workflow: its fixed 27 candidates are fit on training representations, ranked by validation accuracy (then reads, multiplier distance, sweeps, multiplier), and the test set is scored once after selection. `sweep_qubo_num_reads_shared.py` reports test accuracy for each read count without validation selection; those metrics are post-hoc descriptive only and must not choose reads or support unbiased selected-model claims.
+- MNIST QUBO `qubo_time_sec` on new tuned rows is the complete tuner duration through candidate fitting/refitting, validation scoring, and winner selection. `qubo_selected_candidate_time_sec` is the winner's candidate duration. Test evaluation and shared representation setup are outside both fields. Candidate CSV rows retain status and runtime; all-failed grids are saved before the runner stops.
+- New Stroke representations use schema v3, content SHA-256 over canonical tensor bytes plus shape/dtype and protocol metadata, and persisted split row IDs and labels. v2 artifacts load only with an explicit `legacy_unverified` warning. Exact cross-platform numerical reproducibility is not claimed; run metadata records Git state, Python/packages, platform/device, and stable run IDs where available.
+- Stroke seed variation uses one fixed split, so it measures seed variability and not split-to-split generalization. Stroke thresholds and candidate selection are validation-derived; test metrics are final evaluation only.
+- The historical MNIST seed-123 QUBO row remains unchanged. Its approximately `0.0000069` second `qubo_time_sec` is not supported by candidate-level timings and is excluded from efficiency comparisons pending independent substantiation.
+- Aggregate writers preserve protocol and selected-configuration groups and refuse to replace existing tables. Use a new output path or explicit overwrite option where the runner provides one.
 
 ---
 
@@ -267,11 +284,7 @@ $stamp = Get-Date -Format "yyyyMMdd_HHmmss"
 *Note: This command runs 40 training executions (8 methods x 5 seeds) and saves raw and summary CSVs to `data/results_diagnostic/`.*
 
 #### 4. Shared-Representation Validation Comparison
-To train (or reuse) a frozen representation and compare heads with strict validation isolation:
-```powershell
-# Run shared representation comparison on seed 42 with 27-config QUBO tuning
-.\.venv\Scripts\python.exe -m experiments.MNIST_experiments.run_mnist_shared_validation --seed 42 --epochs 16
-```
+For the one-seed isolated pilot command, see Section 2.3 above.
 
 #### 5. QUBO Validation-Tuning Grid Search (Standalone)
 To run the 27-configuration tuning grid (3 x 3 x 3) on a shared representation:
@@ -412,6 +425,19 @@ python -m experiments.stroke_experiments.plot_stroke_results
 ```
 
 It writes PNG charts for balanced accuracy, PR-AUC, ROC-AUC, and F1 plus a summary CSV. It refuses to overwrite an existing summary or plot unless `--overwrite` is supplied; choose a new `--output-dir` for a separate run.
+
+### Lightweight remediation tests
+
+These tests use synthetic inputs and do not download data or train full models:
+
+```powershell
+.\.venv\Scripts\python.exe -m unittest tests.test_model_invariants tests.test_qubo_validation_tuning
+.\.venv\Scripts\python.exe -m unittest tests.test_binarized_ridge_audit tests.test_mnist_representation tests.test_mnist_results_schema tests.test_model_invariants tests.test_remediation_integrity
+.\.venv\Scripts\python.exe -m unittest experiments.MNIST_experiments.test_ste_head tests.test_direct_binary_head
+.\.venv\Scripts\python.exe -m unittest experiments.stroke_experiments.test_stroke_qubo
+.\.venv\Scripts\python.exe -m unittest experiments.stroke_experiments.test_stroke_preprocessing
+.\.venv\Scripts\python.exe -m unittest experiments.stroke_experiments.test_stroke_ls_heads
+```
 
 ## 4. Cross-platform reproducibility
 
