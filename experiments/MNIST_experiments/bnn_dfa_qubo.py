@@ -373,21 +373,19 @@ def evaluate_qubo_head(
     )
 
 
-# ============================================================
-# MAIN
-# ============================================================
+def _recorded_qubo_runtime(tuning_rows, fixed_runtime_sec):
+    """Return total candidate cost for tuning, or the fixed-run timer."""
+    if tuning_rows is None:
+        return fixed_runtime_sec
+    return sum(float(row["runtime_sec"]) for row in tuning_rows)
 
 
-    append_result(
-        experiment="bnn_dfa_qubo",
-        method=result_method,
-        seed=seed,
-        test_accuracy=test_accuracy,
-        test_loss=test_loss if "test_loss" in locals() else None,
-        training_time_sec=training_timer.seconds if "training_timer" in locals() else None,
-        parameter_count=count_parameters(model),
-        qubo_time_sec=qubo_timer.seconds if "qubo_timer" in locals() else None,
+def _append_qubo_result(tuning_rows, fixed_runtime_sec, **result_fields):
+    """Append a QUBO result with runtime semantics matching its run mode."""
+    result_fields["qubo_time_sec"] = _recorded_qubo_runtime(
+        tuning_rows, fixed_runtime_sec,
     )
+    append_result(**result_fields)
 
 
 if __name__ == "__main__":
@@ -739,7 +737,9 @@ if __name__ == "__main__":
         "=========================================="
     )
 
-    append_result(
+    _append_qubo_result(
+        tuning_rows=tuning_rows,
+        fixed_runtime_sec=qubo_timer.seconds,
         experiment="bnn_dfa_qubo",
         method=result_method,
         seed=seed,
@@ -748,7 +748,6 @@ if __name__ == "__main__":
         training_time_sec=training_seconds,
         parameter_count=(count_parameters(model) if model is not None else
                          representation["metadata"]["backbone_parameter_count"]),
-        qubo_time_sec=qubo_timer.seconds,
         qubo_tuning_enabled=args.qubo_tuning,
         qubo_num_reads_selected=tuning_winner["num_reads"] if tuning_winner else None,
         qubo_num_sweeps_selected=tuning_winner["num_sweeps"] if tuning_winner else None,

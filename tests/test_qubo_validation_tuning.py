@@ -18,6 +18,7 @@ from experiments.MNIST_experiments.tune_qubo_validation import (
     validate_grid,
     _accuracy,
 )
+from experiments.MNIST_experiments.bnn_dfa_qubo import _append_qubo_result
 import experiments.MNIST_experiments.tune_qubo_validation as tuning
 from models.qubo_head import optimize_binary_class, optimize_binary_classifier
 
@@ -84,6 +85,7 @@ class QuboValidationTuningTests(unittest.TestCase):
 
     def test_num_sweeps_reaches_the_neal_sample_ising_api(self):
         response = mock.MagicMock()
+        response.__len__.return_value = 1
         response.first.sample = {0: 1, 1: -1}
         with mock.patch("models.qubo_head.neal.SimulatedAnnealingSampler") as sampler_type:
             sampler_type.return_value.sample_ising.return_value = response
@@ -96,6 +98,79 @@ class QuboValidationTuningTests(unittest.TestCase):
         sampler = sampler_type.return_value
         sampler.sample_ising.assert_called_once()
         self.assertEqual(sampler.sample_ising.call_args.kwargs["num_sweeps"], 777)
+
+    def test_optimizer_rejects_invalid_reads_sweeps_and_nonfinite_alpha(self):
+        valid_H = torch.tensor([[0., 1.], [1., 0.], [2., 1.]])
+        valid_target = torch.tensor([-1., 1., 1.])
+        invalid_calls = [
+            {"num_reads": 0},
+            {"num_reads": -2},
+            {"num_reads": 1.5},
+            {"num_sweeps": 0},
+            {"num_sweeps": -1},
+            {"num_sweeps": 2.5},
+            {"alpha": float("nan")},
+            {"alpha": float("inf")},
+            {"alpha": -float("inf")},
+        ]
+        for overrides in invalid_calls:
+            arguments = {"alpha": 0.2, "num_reads": 5, "num_sweeps": 10}
+            arguments.update(overrides)
+            with self.subTest(overrides=overrides):
+                with self.assertRaisesRegex(ValueError, "num_reads|num_sweeps|alpha"):
+                    optimize_binary_class(valid_H, valid_target, **arguments)
+
+    def test_optimizer_rejects_empty_solver_response(self):
+        response = mock.MagicMock()
+        response.__len__.return_value = 0
+        with mock.patch("models.qubo_head.neal.SimulatedAnnealingSampler") as sampler_type:
+            sampler_type.return_value.sample_ising.return_value = response
+            with self.assertRaisesRegex(RuntimeError, "returned no samples"):
+                optimize_binary_class(torch.zeros(3, 2), torch.ones(3), alpha=0.2)
+
+    def test_optimizer_rejects_missing_solver_variables(self):
+        response = mock.MagicMock()
+        response.__len__.return_value = 1
+        response.first.sample = {0: 1}
+        with mock.patch("models.qubo_head.neal.SimulatedAnnealingSampler") as sampler_type:
+            sampler_type.return_value.sample_ising.return_value = response
+            with self.assertRaisesRegex(RuntimeError, "missing variables: \\[1\\]"):
+                optimize_binary_class(torch.zeros(3, 2), torch.ones(3), alpha=0.2)
+
+    def test_optimizer_rejects_non_bipolar_solver_values(self):
+        response = mock.MagicMock()
+        response.__len__.return_value = 1
+        response.first.sample = {0: 1, 1: 0}
+        with mock.patch("models.qubo_head.neal.SimulatedAnnealingSampler") as sampler_type:
+            sampler_type.return_value.sample_ising.return_value = response
+            with self.assertRaisesRegex(RuntimeError, "non-bipolar values"):
+                optimize_binary_class(torch.zeros(3, 2), torch.ones(3), alpha=0.2)
+
+    def test_tuned_result_records_sum_of_candidate_runtime(self):
+        rows = [{"runtime_sec": 1.25}, {"runtime_sec": 2.5}, {"runtime_sec": 0.75}]
+        with mock.patch("experiments.MNIST_experiments.bnn_dfa_qubo.append_result") as writer:
+            _append_qubo_result(
+                tuning_rows=rows,
+                fixed_runtime_sec=99.0,
+                experiment="bnn_dfa_qubo",
+                method="tuned QUBO",
+                seed=42,
+                test_accuracy=90.0,
+            )
+        writer.assert_called_once()
+        self.assertEqual(writer.call_args.kwargs["qubo_time_sec"], 4.5)
+
+    def test_fixed_result_preserves_fixed_configuration_runtime(self):
+        with mock.patch("experiments.MNIST_experiments.bnn_dfa_qubo.append_result") as writer:
+            _append_qubo_result(
+                tuning_rows=None,
+                fixed_runtime_sec=3.25,
+                experiment="bnn_dfa_qubo",
+                method="fixed QUBO",
+                seed=42,
+                test_accuracy=90.0,
+            )
+        self.assertEqual(writer.call_args.kwargs["qubo_time_sec"], 3.25)
 
     def test_classifier_passes_num_sweeps_to_each_class_optimizer(self):
         with mock.patch("models.qubo_head.optimize_binary_class", return_value=torch.ones(2)) as optimizer:

@@ -50,6 +50,41 @@ class QUBOEnergyTests(unittest.TestCase):
         target = torch.tensor([-1., -1., 1., 1.])
         self._assert_objective_equivalence(H, target, 0.2)
 
+    def test_pairwise_cutoff_has_bounded_energy_error_around_threshold(self):
+        from models.qubo_head import build_ising_model
+
+        target = torch.zeros(4)
+        base = torch.tensor([-1., 1., -1., 1.])
+        maximum_discrepancy = 0.0
+        for desired_coupling, should_be_retained in ((0.9e-12, False), (1.1e-12, True)):
+            ratio = desired_coupling / 8.0
+            H = torch.stack((base, base * ratio), dim=1)
+            h, J = build_ising_model(H, target, alpha=1.0)
+            if should_be_retained:
+                self.assertIn((0, 1), J)
+            else:
+                self.assertNotIn((0, 1), J)
+
+            # Independently calculate the full centered least-squares energy in
+            # float64, then compare its spin-dependent variation with h/J.
+            H64 = H.double()
+            target64 = target.double()
+            Hc = H64 - H64.mean(dim=0, keepdim=True)
+            yc = target64 - target64.mean()
+            offsets = []
+            for spins in itertools.product((-1.0, 1.0), repeat=2):
+                w = torch.tensor(spins, dtype=torch.float64)
+                direct = ((Hc @ w - yc) ** 2).sum().item()
+                approximate = _ising_energy(spins, h, J)
+                offsets.append(direct - approximate)
+            discrepancy = max(offsets) - min(offsets)
+            maximum_discrepancy = max(maximum_discrepancy, discrepancy)
+
+        # One omitted 0.9e-12 coupler can vary by at most 2|J| over spins;
+        # this fixture measures 1.8e-12 (absolute energy units).
+        self.assertAlmostEqual(maximum_discrepancy, 1.8e-12, delta=2e-15)
+        self.assertLessEqual(maximum_discrepancy, 2e-12)
+
 
 class GradientScalingTests(unittest.TestCase):
     def test_mnist_dfa_error_matches_mean_cross_entropy_gradient(self):

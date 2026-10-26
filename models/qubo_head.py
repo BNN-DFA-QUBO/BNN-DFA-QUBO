@@ -1,3 +1,6 @@
+import math
+from numbers import Integral, Real
+
 import torch
 import neal
 
@@ -243,6 +246,14 @@ def optimize_binary_class(
     Optimize one binary classifier using simulated annealing.
     """
 
+    if not isinstance(num_reads, Integral) or isinstance(num_reads, bool) or num_reads <= 0:
+        raise ValueError("num_reads must be a positive integer")
+    if not isinstance(num_sweeps, Integral) or isinstance(num_sweeps, bool) or num_sweeps <= 0:
+        raise ValueError("num_sweeps must be a positive integer")
+    if (not isinstance(alpha, Real) or isinstance(alpha, bool)
+            or not math.isfinite(float(alpha))):
+        raise ValueError("alpha must be a finite real number")
+
     h, J = build_ising_model(
         H=H,
         target=target,
@@ -261,17 +272,32 @@ def optimize_binary_class(
         seed=seed
     )
 
-    best_sample = (
-        response.first.sample
-    )
+    try:
+        sample_count = len(response)
+    except Exception as exc:
+        raise RuntimeError("simulated annealing returned an invalid response") from exc
+    if sample_count == 0:
+        raise RuntimeError("simulated annealing returned no samples")
+    try:
+        best_sample = response.first.sample
+    except Exception as exc:
+        raise RuntimeError("simulated annealing response has no first sample") from exc
+
+    expected_variables = set(range(H.shape[1]))
+    try:
+        returned_variables = set(best_sample.keys())
+    except (AttributeError, TypeError) as exc:
+        raise RuntimeError("simulated annealing first sample is not a variable mapping") from exc
+    if not expected_variables.issubset(returned_variables):
+        missing = sorted(expected_variables.difference(returned_variables))
+        raise RuntimeError(f"simulated annealing sample is missing variables: {missing}")
+    invalid = {variable: best_sample[variable] for variable in expected_variables
+               if best_sample[variable] not in (-1, 1)}
+    if invalid:
+        raise RuntimeError(f"simulated annealing sample contains non-bipolar values: {invalid}")
 
     weights = torch.tensor(
-        [
-            1.0
-            if best_sample[i] == 1
-            else -1.0
-            for i in range(H.shape[1])
-        ],
+        [float(best_sample[i]) for i in range(H.shape[1])],
         dtype=torch.float32
     )
 

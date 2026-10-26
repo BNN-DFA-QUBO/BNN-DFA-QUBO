@@ -8,6 +8,9 @@ ROC-AUC, with validation-only threshold selection. Test labels do not take part
 in calibration, candidate construction, ranking, or threshold selection.
 """
 import sys
+import math
+import time
+from numbers import Integral, Real
 from pathlib import Path
 
 sys.path.append(str(Path(__file__).resolve().parents[2]))
@@ -38,8 +41,7 @@ def build_ising_model(H, target, alpha):
         raise ValueError("QUBO requires aligned, non-empty features and targets")
     if not torch.isfinite(H64).all() or not torch.isfinite(target64).all():
         raise ValueError("QUBO requires finite features and targets")
-    if not np.isfinite(alpha) or alpha <= 0:
-        raise ValueError("QUBO alpha must be finite and positive")
+    alpha = _validate_positive_real(alpha, "alpha")
 
     H_centered = H64 - H64.mean(dim=0, keepdim=True)
     target_centered = target64 - target64.mean()
@@ -72,6 +74,86 @@ def _ising_energy(bits, h, J):
     )
 
 
+_MAX_SOLVER_SEED = (2 ** 32) - 1
+
+
+def _validate_positive_integer(value, name):
+    if not isinstance(value, Integral) or isinstance(value, (bool, np.bool_)) or value <= 0:
+        raise ValueError(f"{name} must be a positive integer")
+    return int(value)
+
+
+def _validate_seed(seed):
+    if (not isinstance(seed, Integral) or isinstance(seed, (bool, np.bool_))
+            or not 0 <= int(seed) <= _MAX_SOLVER_SEED):
+        raise ValueError(f"seed must be an integer in [0, {_MAX_SOLVER_SEED}]")
+    return int(seed)
+
+
+def _validate_positive_real(value, name):
+    if (not isinstance(value, Real) or isinstance(value, (bool, np.bool_))
+            or not math.isfinite(float(value)) or float(value) <= 0):
+        raise ValueError(f"{name} must be finite and positive")
+    return float(value)
+
+
+def _validate_solver_response(response, expected_variables, context):
+    """Validate all samples and return solver variable order and sample matrix."""
+    try:
+        sample_count = len(response)
+    except Exception as exc:
+        raise RuntimeError(f"{context} returned an invalid solver response") from exc
+    if sample_count == 0:
+        raise RuntimeError(f"{context} returned an empty solver response")
+    try:
+        variables = list(response.variables)
+        samples = np.asarray(response.record.sample)
+    except Exception as exc:
+        raise RuntimeError(f"{context} response is missing sample data or variables") from exc
+
+    if len(set(variables)) != len(variables):
+        raise RuntimeError(f"{context} response contains duplicate variables")
+    missing = sorted(set(expected_variables).difference(variables))
+    if missing:
+        raise RuntimeError(f"{context} response is missing expected variables: {missing}")
+    if (samples.ndim != 2 or samples.shape[0] != sample_count
+            or samples.shape[1] != len(variables)):
+        raise RuntimeError(f"{context} response sample matrix has an invalid shape")
+
+    positions = [variables.index(variable) for variable in expected_variables]
+    for row_index in range(sample_count):
+        for variable, column_index in zip(expected_variables, positions):
+            spin = samples[row_index, column_index]
+            if (isinstance(spin, (bool, np.bool_)) or not isinstance(spin, Real)
+                    or not math.isfinite(float(spin)) or float(spin) not in (-1.0, 1.0)):
+                raise RuntimeError(
+                    f"{context} response has invalid spin {spin!r} for variable {variable} "
+                    f"in sample {row_index}; expected -1 or +1"
+                )
+    return variables, samples
+
+
+def _validate_solver_sample(sample, expected_variables, context):
+    try:
+        variables = set(sample.keys())
+    except Exception as exc:
+        raise RuntimeError(f"{context} first sample is not a variable mapping") from exc
+    missing = sorted(set(expected_variables).difference(variables))
+    if missing:
+        raise RuntimeError(f"{context} first sample is missing expected variables: {missing}")
+    validated = {}
+    for variable in expected_variables:
+        spin = sample[variable]
+        if (isinstance(spin, (bool, np.bool_)) or not isinstance(spin, Real)
+                or not math.isfinite(float(spin)) or float(spin) not in (-1.0, 1.0)):
+            raise RuntimeError(
+                f"{context} first sample has invalid spin {spin!r} for variable {variable}; "
+                "expected -1 or +1"
+            )
+        validated[variable] = int(spin)
+    return validated
+
+
 def _refine_ising_bits(bits, h, J, max_passes=50):
     """Greedy single-spin descent using only the training-derived Ising energy."""
     spins = [int(value) for value in bits]
@@ -95,15 +177,25 @@ def _refine_ising_bits(bits, h, J, max_passes=50):
     return tuple(spins)
 
 
-def optimize_binary_class(H, target, alpha, num_reads, seed):
+def optimize_binary_class(H, target, alpha, num_reads, seed, num_sweeps=QUBO_NUM_SWEEPS):
     """Return the lowest-energy binary {-1,+1} weight vector from one solve."""
+    num_reads = _validate_positive_integer(num_reads, "num_reads")
+    num_sweeps = _validate_positive_integer(num_sweeps, "num_sweeps")
+    seed = _validate_seed(seed)
+    alpha = _validate_positive_real(alpha, "alpha")
     h, J = build_ising_model(H, target, alpha)
     response = neal.SimulatedAnnealingSampler().sample_ising(
-        h, J, num_reads=int(num_reads), seed=int(seed)
+        h, J, num_reads=num_reads, num_sweeps=num_sweeps, seed=seed
     )
-    sample = response.first.sample
+    expected_variables = list(range(torch.as_tensor(H).shape[1]))
+    _validate_solver_response(response, expected_variables, "simulated annealing")
+    try:
+        sample = response.first.sample
+    except Exception as exc:
+        raise RuntimeError("simulated annealing response has no first sample") from exc
+    sample = _validate_solver_sample(sample, expected_variables, "simulated annealing")
     return torch.tensor(
-        [1.0 if sample[i] == 1 else -1.0 for i in range(H.shape[1])],
+        [float(sample[i]) for i in expected_variables],
         dtype=torch.float32,
     )
 
@@ -120,12 +212,19 @@ def sample_binary_candidates(
     random_seed_starts=QUBO_RANDOM_SEED_STARTS,
 ):
     """Collect distinct low-energy weight candidates across the alpha sweep."""
+    num_reads = _validate_positive_integer(num_reads, "num_reads")
+    num_sweeps = _validate_positive_integer(num_sweeps, "num_sweeps")
+    seed = _validate_seed(seed)
+    top_k = _validate_positive_integer(top_k, "top_k")
+    if not isinstance(random_seed_starts, Integral) or isinstance(random_seed_starts, (bool, np.bool_)) or random_seed_starts < 0:
+        raise ValueError("random_seed_starts must be a non-negative integer")
+    base_alpha = _validate_positive_real(base_alpha, "base_alpha")
     H_cpu = torch.as_tensor(H).detach().to(device="cpu", dtype=torch.float32)
     target_cpu = torch.as_tensor(target).detach().reshape(-1).to(device="cpu", dtype=torch.float32)
-    if top_k < 1 or num_reads < 1 or num_sweeps < 1:
-        raise ValueError("top_k, num_reads, and num_sweeps must be positive")
-    if random_seed_starts < 0:
-        raise ValueError("random_seed_starts must be non-negative")
+    try:
+        alpha_multipliers = tuple(alpha_multipliers)
+    except TypeError as exc:
+        raise ValueError("alpha_multipliers must be a non-empty sequence") from exc
     if not alpha_multipliers:
         raise ValueError("At least one QUBO alpha multiplier is required")
 
@@ -150,20 +249,24 @@ def sample_binary_candidates(
 
     for scale_index, multiplier in enumerate(alpha_multipliers):
         multiplier = float(multiplier)
-        if not np.isfinite(multiplier) or multiplier <= 0:
-            raise ValueError("QUBO alpha multipliers must be finite and positive")
+        multiplier = _validate_positive_real(multiplier, "QUBO alpha multiplier")
         alpha = float(base_alpha) * multiplier
         h, J = build_ising_model(H_cpu, target_cpu, alpha)
+        solver_seed = (seed + 104729 * scale_index) % (_MAX_SOLVER_SEED + 1)
         response = sampler.sample_ising(
             h,
             J,
-            num_reads=int(num_reads),
-            num_sweeps=int(num_sweeps),
-            seed=int(seed) + 104729 * scale_index,
+            num_reads=num_reads,
+            num_sweeps=num_sweeps,
+            seed=solver_seed,
         )
-        variable_positions = {variable: i for i, variable in enumerate(response.variables)}
+        response_variables, samples = _validate_solver_response(
+            response, list(range(hidden_size)), "simulated annealing"
+        )
+        variable_positions = {variable: i for i, variable in enumerate(response_variables)}
         energies = np.asarray(response.record.energy, dtype=np.float64)
-        samples = np.asarray(response.record.sample)
+        if energies.ndim != 1 or len(energies) != len(samples) or not np.isfinite(energies).all():
+            raise RuntimeError("simulated annealing response contains invalid energy values")
         for index in np.argsort(energies)[: min(int(top_k), len(energies))]:
             row = samples[index]
             bits = tuple(
@@ -265,6 +368,7 @@ def recover_bias(H, target, weights, alpha):
 
 def train_qubo(representation_path, seed):
     set_seed(seed)
+    qubo_search_started = time.perf_counter()
     data = load_representation(representation_path)
     H_train, H_val, H_test, transform = standardize_hidden_features(
         data["H_train"], data["H_val"], data["H_test"]
@@ -275,6 +379,7 @@ def train_qubo(representation_path, seed):
     target_train = 2.0 * y_train - 1.0
 
     base_alpha = calculate_alpha(H_train, y_train)
+    candidate_generation_started = time.perf_counter()
     candidates = sample_binary_candidates(
         H=H_train,
         target=target_train,
@@ -282,7 +387,9 @@ def train_qubo(representation_path, seed):
         num_reads=QUBO_NUM_READS,
         seed=seed,
     )
+    qubo_candidate_generation_seconds = time.perf_counter() - candidate_generation_started
 
+    validation_selection_started = time.perf_counter()
     best = None
     for candidate in candidates:
         weights = candidate["weights"]
@@ -323,6 +430,12 @@ def train_qubo(representation_path, seed):
                 "validation_roc_auc": float(val_metrics["roc_auc"]),
             }
 
+    qubo_validation_selection_seconds = time.perf_counter() - validation_selection_started
+    # This covers representation loading/standardization, alpha calibration,
+    # annealing, training-energy refinement, candidate scoring, and ranking.
+    # Test metric calculation below is deliberately outside search timing.
+    qubo_search_seconds = time.perf_counter() - qubo_search_started
+
     test_scores = best["alpha"] * (H_test @ best["weights"]) + best["bias"]
     metrics = calculate_metrics(y_test.numpy(), test_scores.numpy(), best["threshold"])
     return {
@@ -347,6 +460,9 @@ def train_qubo(representation_path, seed):
         "qubo_total_reads": QUBO_NUM_READS * len(QUBO_ALPHA_MULTIPLIERS),
         "qubo_alpha_multipliers": list(QUBO_ALPHA_MULTIPLIERS),
         "qubo_candidate_count": len(candidates),
+        "qubo_search_seconds": float(qubo_search_seconds),
+        "qubo_candidate_generation_seconds": float(qubo_candidate_generation_seconds),
+        "qubo_validation_selection_seconds": float(qubo_validation_selection_seconds),
         "qubo_energy": float(best["candidate"]["energy"]),
         "qubo_candidate_source": best["candidate"]["candidate_source"],
         "hidden_feature_transform": transform["transform"],
