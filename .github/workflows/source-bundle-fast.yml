@@ -23,7 +23,7 @@ jobs:
           from pathlib import Path
           root = Path('.').resolve()
           paths = subprocess.check_output(['git', 'ls-files', '-co', '--exclude-standard'], text=True).splitlines()
-          out = root.parent / 'BNN-DFA-QUBO-source.zip'
+          out = root / 'BNN-DFA-QUBO-source.zip'
           excluded = {'.git', '.venv', 'venv', '__pycache__', '.pytest_cache'}
           with zipfile.ZipFile(out, 'w', zipfile.ZIP_DEFLATED, compresslevel=6) as z:
               for name in paths:
@@ -40,5 +40,5 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: bnn-dfa-qubo-source-fast
-          path: ../BNN-DFA-QUBO-source.zip
+          path: BNN-DFA-QUBO-source.zip
           retention-days: 3
