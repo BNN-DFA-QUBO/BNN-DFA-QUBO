@@ -357,11 +357,16 @@ if __name__ == "__main__":
         "\nCollecting hidden representations..."
     )
 
-    H_train, y_train = collect_hidden_features(
-        model,
-        train_loader,
-        device
-    )
+    if device.type == "cuda":
+        torch.cuda.synchronize(device)
+    with Timer() as extraction_timer:
+        H_train, y_train = collect_hidden_features(
+            model,
+            train_loader,
+            device
+        )
+    if device.type == "cuda":
+        torch.cuda.synchronize(device)
 
     print(
         "Hidden feature shape:",
@@ -377,17 +382,22 @@ if __name__ == "__main__":
         "using STE..."
     )
 
-    (
-        binary_weights,
-        bias,
-        train_accuracy
-    ) = train_binary_head_ste(
-        H_train,
-        y_train,
-        num_classes=10,
-        epochs=50,
-        lr=0.01
-    )
+    if device.type == "cuda":
+        torch.cuda.synchronize(device)
+    with Timer() as head_fit_timer:
+        (
+            binary_weights,
+            bias,
+            train_accuracy
+        ) = train_binary_head_ste(
+            H_train,
+            y_train,
+            num_classes=10,
+            epochs=50,
+            lr=0.01
+        )
+    if device.type == "cuda":
+        torch.cuda.synchronize(device)
 
     print(
         "\nBinary weight shape:",
@@ -431,6 +441,12 @@ if __name__ == "__main__":
 
     print("==========================================")
 
+    backbone_params = count_parameters(model)
+    # Deployed parameters: 128*10 binary weights + 10 biases = 1290
+    head_params = int(binary_weights.numel() + bias.numel())
+    total_params = backbone_params + head_params
+    total_time = training_timer.seconds + extraction_timer.seconds + head_fit_timer.seconds
+
     append_result(
         experiment="dfa_binary_head_ste",
         method="BNN + DFA + STE Binary Head",
@@ -438,5 +454,14 @@ if __name__ == "__main__":
         test_accuracy=test_accuracy,
         test_loss=None,
         training_time_sec=training_timer.seconds,
-        parameter_count=count_parameters(model),
+        parameter_count=backbone_params,
+        backbone_training_time_sec=training_timer.seconds,
+        feature_extraction_time_sec=extraction_timer.seconds,
+        head_fit_time_sec=head_fit_timer.seconds,
+        current_run_total_time_sec=total_time,
+        end_to_end_training_time_sec=total_time,
+        pipeline_timing_status="complete",
+        backbone_parameter_count=backbone_params,
+        head_parameter_count=head_params,
+        total_parameter_count=total_params,
     )

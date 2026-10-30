@@ -643,13 +643,18 @@ if __name__ == "__main__":
         "\nCollecting hidden representations..."
     )
 
-    H_train, y_train = (
-        collect_hidden_features(
-            model,
-            train_loader,
-            device
+    if device.type == "cuda":
+        torch.cuda.synchronize(device)
+    with Timer() as extraction_timer:
+        H_train, y_train = (
+            collect_hidden_features(
+                model,
+                train_loader,
+                device
+            )
         )
-    )
+    if device.type == "cuda":
+        torch.cuda.synchronize(device)
 
     print(
         "Hidden feature shape:",
@@ -657,34 +662,44 @@ if __name__ == "__main__":
     )
 
     # --------------------------------------------------------
-    # Least-squares head
+    # Least-squares head & binarization fit
     # --------------------------------------------------------
 
     print(
         f"\nFitting {('Ridge LS' if ls_solver == 'ridge' else 'legacy float32 LS')} head..."
     )
 
-    if ls_solver == "ridge":
-        classifier = fit_least_squares(H_train, y_train)
-        method_name = "BNN + DFA + Binarized Ridge LS Head (refit scale+bias)"
-        prefit_name = "Ridge LS"
-    else:
-        classifier = fit_legacy_least_squares(H_train, y_train)
-        method_name = "BNN + DFA + Binarized LS Head (legacy LS initialization)"
-        prefit_name = "Legacy LS"
+    if device.type == "cuda":
+        torch.cuda.synchronize(device)
+    with Timer() as head_fit_timer:
+        if ls_solver == "ridge":
+            classifier = fit_least_squares(H_train, y_train)
+            method_name = "BNN + DFA + Binarized Ridge LS Head (refit scale+bias)"
+            prefit_name = "Ridge LS"
+        else:
+            classifier = fit_legacy_least_squares(H_train, y_train)
+            method_name = "BNN + DFA + Binarized LS Head (legacy LS initialization)"
+            prefit_name = "Legacy LS"
+
+        # Global variables used by binary conversion
+        H_global = H_train
+        Y_global = F.one_hot(
+            y_train,
+            num_classes=10
+        ).float()
+
+        (
+            binary_weights,
+            scales,
+            bias
+        ) = binarize_classifier(
+            classifier,
+            refit_scale_bias=(ls_solver == "ridge"),
+        )
+    if device.type == "cuda":
+        torch.cuda.synchronize(device)
 
     print("Initial classifier shape:", classifier.shape)
-
-    # --------------------------------------------------------
-    # Global variables used by binary conversion
-    # --------------------------------------------------------
-
-    H_global = H_train
-
-    Y_global = F.one_hot(
-        y_train,
-        num_classes=10
-    ).float()
 
     # --------------------------------------------------------
     # Evaluate REAL-VALUED LS head
@@ -704,21 +719,8 @@ if __name__ == "__main__":
     prefit_accuracy_label = "Ridge LS Test Accuracy" if ls_solver == "ridge" else "Least-Squares Test Accuracy"
     print(f"{prefit_accuracy_label}: {ls_test_accuracy:.2f}%")
 
-    # --------------------------------------------------------
-    # Binarize LS classifier
-    # --------------------------------------------------------
-
     print(
-        "\nBinarizing least-squares classifier..."
-    )
-
-    (
-        binary_weights,
-        scales,
-        bias
-    ) = binarize_classifier(
-        classifier,
-        refit_scale_bias=(ls_solver == "ridge"),
+        "\nBinarizing least-squares classifier completed."
     )
 
     print(
@@ -820,6 +822,12 @@ if __name__ == "__main__":
         "=========================================="
     )
 
+    backbone_params = count_parameters(model)
+    # 128*10 binary weights + 10 scales + 10 biases = 1300
+    head_params = int(binary_weights.numel() + scales.numel() + bias.numel())
+    total_params = backbone_params + head_params
+    total_time = training_timer.seconds + extraction_timer.seconds + head_fit_timer.seconds
+
     append_result(
         experiment="dfa_binary_head",
         method=method_name,
@@ -827,7 +835,16 @@ if __name__ == "__main__":
         test_accuracy=binary_test_accuracy,
         test_loss=None,
         training_time_sec=training_timer.seconds,
-        parameter_count=count_parameters(model),
+        parameter_count=backbone_params,
+        backbone_training_time_sec=training_timer.seconds,
+        feature_extraction_time_sec=extraction_timer.seconds,
+        head_fit_time_sec=head_fit_timer.seconds,
+        current_run_total_time_sec=total_time,
+        end_to_end_training_time_sec=total_time,
+        pipeline_timing_status="complete",
+        backbone_parameter_count=backbone_params,
+        head_parameter_count=head_params,
+        total_parameter_count=total_params,
         notes=(
             f"{prefit_name} pre-binarization accuracy: {ls_test_accuracy:.4f}%; "
             f"post-binarization scale+bias refit={ls_solver == 'ridge'}."

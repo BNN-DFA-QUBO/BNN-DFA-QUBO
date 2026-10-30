@@ -148,4 +148,13 @@ if __name__ == "__main__":
         test_loss=test_loss,
         training_time_sec=training_timer.seconds,
         parameter_count=count_parameters(model),
+        backbone_training_time_sec=training_timer.seconds,
+        feature_extraction_time_sec=0.0,
+        head_fit_time_sec=0.0,
+        current_run_total_time_sec=training_timer.seconds,
+        end_to_end_training_time_sec=training_timer.seconds,
+        pipeline_timing_status="complete",
+        backbone_parameter_count=count_parameters(model),
+        head_parameter_count=0,
+        total_parameter_count=count_parameters(model),
     )

@@ -578,30 +578,40 @@ if __name__ == "__main__":
 
     print("\nCollecting hidden representations...")
 
-    H_train, y_train = collect_hidden_features(
-        model=model,
-        loader=train_loader,
-        device=device
-    )
+    if device.type == "cuda":
+        torch.cuda.synchronize(device)
+    with Timer() as extraction_timer:
+        H_train, y_train = collect_hidden_features(
+            model=model,
+            loader=train_loader,
+            device=device
+        )
+    if device.type == "cuda":
+        torch.cuda.synchronize(device)
 
     print("Training hidden feature shape:", H_train.shape)
 
-    if ls_solver == "ridge":
-        print("\nFitting numerically stable Ridge LS classifier...")
-        classifier = fit_least_squares_classifier(
-            H=H_train, labels=y_train, num_classes=10
-        )
-        head_name = "Ridge LS"
-        method_name = "BNN + DFA + Ridge LS Head"
-        summary_head_name = "BNN + DFA + Ridge LS Head"
-    else:
-        print("\nFitting legacy float32 least-squares classifier...")
-        classifier = fit_legacy_least_squares_classifier(
-            H=H_train, labels=y_train, num_classes=10
-        )
-        head_name = "Legacy LS"
-        method_name = "BNN + DFA + Real-Valued LS Head (legacy)"
-        summary_head_name = "BNN + DFA + Real-Valued LS Head (legacy)"
+    if device.type == "cuda":
+        torch.cuda.synchronize(device)
+    with Timer() as head_fit_timer:
+        if ls_solver == "ridge":
+            print("\nFitting numerically stable Ridge LS classifier...")
+            classifier = fit_least_squares_classifier(
+                H=H_train, labels=y_train, num_classes=10
+            )
+            head_name = "Ridge LS"
+            method_name = "BNN + DFA + Ridge LS Head"
+            summary_head_name = "BNN + DFA + Ridge LS Head"
+        else:
+            print("\nFitting legacy float32 least-squares classifier...")
+            classifier = fit_legacy_least_squares_classifier(
+                H=H_train, labels=y_train, num_classes=10
+            )
+            head_name = "Legacy LS"
+            method_name = "BNN + DFA + Real-Valued LS Head (legacy)"
+            summary_head_name = "BNN + DFA + Real-Valued LS Head (legacy)"
+    if device.type == "cuda":
+        torch.cuda.synchronize(device)
 
     print("Least-squares classifier shape:", classifier.shape)
 
@@ -639,6 +649,11 @@ if __name__ == "__main__":
     print(f"Difference: {difference:+.2f} percentage points")
     print("==========================================")
 
+    backbone_params = count_parameters(model)
+    head_params = int(classifier.numel())
+    total_params = backbone_params + head_params
+    total_time = training_timer.seconds + extraction_timer.seconds + head_fit_timer.seconds
+
     append_result(
         experiment="dfa_least_squares",
         method=method_name,
@@ -646,5 +661,14 @@ if __name__ == "__main__":
         test_accuracy=test_ls_accuracy,
         test_loss=None,
         training_time_sec=training_timer.seconds,
-        parameter_count=count_parameters(model),
+        parameter_count=backbone_params,
+        backbone_training_time_sec=training_timer.seconds,
+        feature_extraction_time_sec=extraction_timer.seconds,
+        head_fit_time_sec=head_fit_timer.seconds,
+        current_run_total_time_sec=total_time,
+        end_to_end_training_time_sec=total_time,
+        pipeline_timing_status="complete",
+        backbone_parameter_count=backbone_params,
+        head_parameter_count=head_params,
+        total_parameter_count=total_params,
     )

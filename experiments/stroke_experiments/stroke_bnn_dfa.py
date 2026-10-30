@@ -133,6 +133,11 @@ def train_dfa(seed, split_seed=None, balance_method=None, overwrite=False, outpu
         device=device
     )
 
+    if device.type == "cuda":
+        torch.cuda.synchronize(device)
+    import time
+    t_train_start = time.perf_counter()
+
     for epoch in range(TRAIN_EPOCHS):
         model.train()
 
@@ -215,6 +220,10 @@ def train_dfa(seed, split_seed=None, balance_method=None, overwrite=False, outpu
                 for key, value in model.state_dict().items()
             }
 
+    if device.type == "cuda":
+        torch.cuda.synchronize(device)
+    training_seconds = time.perf_counter() - t_train_start
+
     model.load_state_dict(best_state)
 
     model.eval()
@@ -241,6 +250,10 @@ def train_dfa(seed, split_seed=None, balance_method=None, overwrite=False, outpu
                                           "validation": metadata["validation_class_counts"],
                                           "test": metadata["test_class_counts"]}, **test_metrics}, f, indent=2)
 
+    if device.type == "cuda":
+        torch.cuda.synchronize(device)
+    t_extract_start = time.perf_counter()
+
     with torch.no_grad():
         X_train_device = torch.tensor(
             X_train.values,
@@ -266,6 +279,10 @@ def train_dfa(seed, split_seed=None, balance_method=None, overwrite=False, outpu
             model.fc1(X_test_device)
         ).cpu()
 
+    if device.type == "cuda":
+        torch.cuda.synchronize(device)
+    extraction_seconds = time.perf_counter() - t_extract_start
+
     return {
         "seed": seed,
         "model": model,
@@ -273,6 +290,8 @@ def train_dfa(seed, split_seed=None, balance_method=None, overwrite=False, outpu
         "device": str(device),
         "best_epoch": best_epoch,
         "best_val_ba": best_val_ba,
+        "training_seconds": float(training_seconds),
+        "feature_extraction_seconds": float(extraction_seconds),
         "H_train": H_train,
         "H_val": H_val,
         "H_test": H_test,

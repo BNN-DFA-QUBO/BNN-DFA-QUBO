@@ -167,6 +167,8 @@ def run_experiments(seeds=None, split_seed=SPLIT_SEED, balancing_method=BALANCIN
             print(f"Running {method_name}...")
 
             failed = False
+            import time
+            t_fit_start = time.perf_counter()
             try:
                 if method_mode == "seed":
                     result = method_function(representation_path, seed)
@@ -174,7 +176,9 @@ def run_experiments(seeds=None, split_seed=SPLIT_SEED, balancing_method=BALANCIN
                     result = method_function(representation_path, ls_solver=method_mode)
                 else:
                     result = method_function(representation_path)
+                head_fit_time = time.perf_counter() - t_fit_start
             except ValueError as exc:
+                head_fit_time = time.perf_counter() - t_fit_start
                 # A degenerate QUBO scale is a scientific failure for this head,
                 # but should not erase successful results from the other seeds.
                 if method_name != "QUBO Binary" or "QUBO scale calibration is degenerate" not in str(exc):
@@ -233,6 +237,44 @@ def run_experiments(seeds=None, split_seed=SPLIT_SEED, balancing_method=BALANCIN
             result["representation_provenance_json"] = json.dumps(
                 representation_artifact.get("run_provenance", {}), sort_keys=True
             )
+
+            # Computational-cost accounting:
+            # Backbone: input_size=15 -> 15*64 + 64 = 1024; 64*1 + 1 = 65 -> 1089
+            backbone_param_count = 15 * 64 + 64 + 64 * 1 + 1
+            if method_name in ("Real LS", "Binarized LS"):
+                head_param_count = 65  # 64 weights + 1 bias
+            elif method_name == "Binarized Ridge LS (refit scale+bias)":
+                head_param_count = 66  # 64 binary weights + 1 scale + 1 bias
+            elif method_name == "Direct Binary":
+                head_param_count = 64  # 64 binary weights (bias fixed at 0)
+            elif method_name == "STE Binary":
+                head_param_count = 65  # 64 deployed binary weights + 1 bias
+            elif method_name == "QUBO Binary":
+                head_param_count = 66  # 64 binary weights + 1 scale + 1 bias
+            else:
+                head_param_count = 65
+            total_param_count = backbone_param_count + head_param_count
+
+            # Timing accounting
+            # For QUBO, qubo_search_seconds is already measured accurately inside train_qubo
+            if method_name == "QUBO Binary" and "qubo_search_seconds" in result:
+                actual_head_fit = float(result["qubo_search_seconds"])
+            else:
+                actual_head_fit = float(head_fit_time)
+
+            cur_backbone_time = float(dfa_result.get("training_seconds", 0.0))
+            cur_extract_time = float(dfa_result.get("feature_extraction_seconds", 0.0))
+            cur_run_total = cur_backbone_time + cur_extract_time + actual_head_fit
+
+            result["head_fit_time_sec"] = actual_head_fit
+            result["backbone_training_time_sec"] = cur_backbone_time
+            result["feature_extraction_time_sec"] = cur_extract_time
+            result["current_run_total_time_sec"] = cur_run_total
+            result["end_to_end_training_time_sec"] = cur_run_total
+            result["pipeline_timing_status"] = "complete"
+            result["backbone_parameter_count"] = backbone_param_count
+            result["head_parameter_count"] = head_param_count
+            result["total_parameter_count"] = total_param_count
 
             all_results.append(result)
 
@@ -352,6 +394,15 @@ def save_results(results, results_path=None, overwrite=False):
         "package_versions_json",
         "provenance_json",
         "representation_provenance_json",
+        "backbone_training_time_sec",
+        "feature_extraction_time_sec",
+        "head_fit_time_sec",
+        "current_run_total_time_sec",
+        "end_to_end_training_time_sec",
+        "pipeline_timing_status",
+        "backbone_parameter_count",
+        "head_parameter_count",
+        "total_parameter_count",
     ]
 
     if results_path.exists() and not overwrite:

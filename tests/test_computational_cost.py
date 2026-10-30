@@ -295,5 +295,59 @@ class ComputationalCostAnalysisTests(unittest.TestCase):
             )
 
 
+    def test_independent_mnist_and_stroke_parameter_counts(self):
+        # MNIST: 784 -> 128 -> 10
+        mnist_backbone = 784 * 128 + 128 + 128 * 10 + 10  # 101,770
+        self.assertEqual(mnist_backbone, 101770)
+        # Stroke: 15 -> 64 -> 1
+        stroke_backbone = 15 * 64 + 64 + 64 * 1 + 1  # 1089
+        self.assertEqual(stroke_backbone, 1089)
+
+        # Stroke Heads on 64 hidden units:
+        # Real LS: 64 weights + 1 bias = 65
+        self.assertEqual(stroke_backbone + 65, 1154)
+        # Binarized Ridge LS: 64 binary weights + 1 scale + 1 bias = 66
+        self.assertEqual(stroke_backbone + 66, 1155)
+        # Direct Binary: 64 binary weights (bias fixed at 0) = 64
+        self.assertEqual(stroke_backbone + 64, 1153)
+        # STE Binary: 64 deployed binary weights + 1 bias = 65
+        self.assertEqual(stroke_backbone + 65, 1154)
+        # QUBO Binary: 64 binary weights + 1 scale + 1 bias = 66
+        self.assertEqual(stroke_backbone + 66, 1155)
+
+    def test_stroke_controlled_writer_cost_fields_schema(self):
+        from experiments.stroke_experiments.run_stroke_controlled import save_results
+        row = {
+            "experiment_type": "controlled_end_to_end_head_comparison",
+            "method": "QUBO Binary", "seed": 42, "status": "ok",
+            "representation_path": "rep.pt", "representation_sha256": "abc",
+            "run_id": "stroke_42_cost",
+            "git_commit_sha": "deadbeef", "provenance_json": "{}",
+            "backbone_training_time_sec": 12.34,
+            "feature_extraction_time_sec": 0.45,
+            "head_fit_time_sec": 1.23,
+            "current_run_total_time_sec": 14.02,
+            "end_to_end_training_time_sec": 14.02,
+            "pipeline_timing_status": "complete",
+            "backbone_parameter_count": 1089,
+            "head_parameter_count": 66,
+            "total_parameter_count": 1155,
+        }
+        with TemporaryDirectory(dir=Path(__file__).resolve().parents[1]) as temp:
+            path = Path(temp) / "stroke_cost.csv"
+            save_results([row], path)
+            with path.open(newline="", encoding="utf-8") as handle:
+                saved = next(csv.DictReader(handle))
+            self.assertEqual(saved["backbone_training_time_sec"], "12.34")
+            self.assertEqual(saved["feature_extraction_time_sec"], "0.45")
+            self.assertEqual(saved["head_fit_time_sec"], "1.23")
+            self.assertEqual(saved["current_run_total_time_sec"], "14.02")
+            self.assertEqual(saved["end_to_end_training_time_sec"], "14.02")
+            self.assertEqual(saved["pipeline_timing_status"], "complete")
+            self.assertEqual(saved["backbone_parameter_count"], "1089")
+            self.assertEqual(saved["head_parameter_count"], "66")
+            self.assertEqual(saved["total_parameter_count"], "1155")
+
+
 if __name__ == "__main__":
     unittest.main()

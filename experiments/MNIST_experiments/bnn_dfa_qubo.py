@@ -535,7 +535,16 @@ if __name__ == "__main__":
     )
 
     if not args.qubo_tuning:
-        H_train, y_train = collect_hidden_features(model, train_loader, device)
+        if device.type == "cuda":
+            torch.cuda.synchronize(device)
+        with Timer() as extraction_timer:
+            H_train, y_train = collect_hidden_features(model, train_loader, device)
+        if device.type == "cuda":
+            torch.cuda.synchronize(device)
+        extraction_seconds = extraction_timer.seconds
+    else:
+        extraction_seconds = (float(representation.get("feature_extraction_seconds", 0.0))
+                              if representation_source == "trained" else 0.0)
 
     print(
         "Hidden feature shape:",
@@ -619,6 +628,8 @@ if __name__ == "__main__":
         "Optimizing binary classifier using QUBO..."
     )
 
+    if device.type == "cuda":
+        torch.cuda.synchronize(device)
     with Timer() as qubo_timer:
         if args.qubo_tuning:
             binary_weights = tuning_winner["_weights"]
@@ -663,17 +674,20 @@ if __name__ == "__main__":
         "scales and biases..."
     )
 
-    if not args.qubo_tuning:
-        (
-            binary_weights,
-            final_scales,
-            biases
-        ) = calculate_final_scale_and_bias(
-            H=H_train,
-            labels=y_train,
-            binary_weights=binary_weights,
-            num_classes=10
-        )
+    with Timer() as final_scale_bias_timer:
+        if not args.qubo_tuning:
+            (
+                binary_weights,
+                final_scales,
+                biases
+            ) = calculate_final_scale_and_bias(
+                H=H_train,
+                labels=y_train,
+                binary_weights=binary_weights,
+                num_classes=10
+            )
+    if device.type == "cuda":
+        torch.cuda.synchronize(device)
 
     print()
     print(
@@ -747,6 +761,43 @@ if __name__ == "__main__":
         "=========================================="
     )
 
+    backbone_params = (count_parameters(model) if model is not None else
+                       int(representation["metadata"]["backbone_parameter_count"]))
+    # 128*10 binary weights + 10 scales + 10 biases = 1300
+    head_params = int(binary_weights.numel() + final_scales.numel() + biases.numel())
+    total_params = backbone_params + head_params
+
+    # Head fit time:
+    if args.qubo_tuning:
+        head_fit_time = (float(tuning_winner.get("tuning_total_seconds"))
+                         if (tuning_winner and tuning_winner.get("tuning_total_seconds") is not None)
+                         else sum(float(r["runtime_sec"]) for r in tuning_rows))
+    else:
+        head_fit_time = qubo_timer.seconds + final_scale_bias_timer.seconds
+
+    # Current-run work
+    cur_backbone_time = training_seconds
+    cur_extraction_time = extraction_seconds
+    cur_total_time = cur_backbone_time + cur_extraction_time + head_fit_time
+
+    # Pipeline timing completeness
+    if not args.qubo_tuning or representation_source == "trained":
+        e2e_time = cur_total_time
+        timing_status = "complete"
+    else:
+        # Reused representation
+        raw_train = representation.get("training_seconds")
+        raw_ext = representation.get("feature_extraction_seconds")
+        if raw_train is not None and raw_ext is not None:
+            e2e_time = float(raw_train) + float(raw_ext) + head_fit_time
+            timing_status = "complete"
+        elif raw_train is not None:
+            e2e_time = None
+            timing_status = "missing_extraction_time"
+        else:
+            e2e_time = None
+            timing_status = "missing_backbone_and_extraction_time"
+
     _append_qubo_result(
         tuning_rows=tuning_rows,
         fixed_runtime_sec=qubo_timer.seconds,
@@ -757,8 +808,16 @@ if __name__ == "__main__":
         test_accuracy=test_accuracy,
         test_loss=None,
         training_time_sec=training_seconds,
-        parameter_count=(count_parameters(model) if model is not None else
-                         representation["metadata"]["backbone_parameter_count"]),
+        parameter_count=backbone_params,
+        backbone_training_time_sec=cur_backbone_time,
+        feature_extraction_time_sec=cur_extraction_time,
+        head_fit_time_sec=head_fit_time,
+        current_run_total_time_sec=cur_total_time,
+        end_to_end_training_time_sec=e2e_time,
+        pipeline_timing_status=timing_status,
+        backbone_parameter_count=backbone_params,
+        head_parameter_count=head_params,
+        total_parameter_count=total_params,
         qubo_tuning_enabled=args.qubo_tuning,
         qubo_num_reads_selected=tuning_winner["num_reads"] if tuning_winner else None,
         qubo_num_sweeps_selected=tuning_winner["num_sweeps"] if tuning_winner else None,
