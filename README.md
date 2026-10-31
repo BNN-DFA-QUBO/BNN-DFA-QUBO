@@ -2,10 +2,11 @@
 
 Research code for comparing Binarized Neural Networks (BNNs), Direct Feedback Alignment (DFA), and classifier heads, including least-squares (LS), binary, straight-through estimator (STE), and QUBO/Ising heads.
 
-This repository contains **two distinct experiment tracks**:
+This repository contains **three distinct experiment tracks**:
 
 - **MNIST:** ten-class digit classification with BNN backpropagation, DFA, LS-derived heads, STE, and QUBO.
 - **Stroke:** binary stroke prediction with saved preprocessing metadata, stratified train/validation/test splits, optional training-only class balancing, and five DFA classifier heads.
+- **Bank Marketing:** tabular binary prediction of term deposit subscriptions using 66 engineered/normalized features across a strict zero-leakage 70/15/15 stratified protocol, with full reproduction of the five core BNN-DFA-QUBO workflows.
 
 Run commands from the repository root. Generated data, representations, and experiment outputs are local files and are not committed by default.
 
@@ -515,3 +516,51 @@ The `data/` directory is Git-ignored to avoid committing raw datasets, large rep
 ## 7. Current LS validation status on the feature branch
 
 The stable MNIST Ridge-LS path has been evaluated across multiple seeds. Historical Stroke v2 results (the old 23-feature input schema) showed Ridge-derived Binarized LS improving mean test balanced accuracy (71.59% vs. 63.35%) and mean ROC-AUC (78.26% vs. 55.65%) over legacy Binarized LS. Those numbers are **historical v2 results only**: v3 now standardizes the hidden inputs for the stable binary heads and adds STE initialization / QUBO scale candidate selection, so the v2 comparison is not evidence for the current ranking. Rerun the full controlled comparison under the exact v3 code before making current performance claims. The controlled Stroke runner defaults to `--ls-solver ridge`; use `--ls-solver legacy` to reproduce the legacy binarized-LS implementation or `--ls-solver both` to record both heads on each representation. The continuous Stroke Real-LS default remains unchanged.
+
+
+## 8. Bank Marketing Dataset Experiments
+
+The **Bank Marketing** experiment track evaluates whether discrete QUBO heads and BNNs with Direct Feedback Alignment can be successfully deployed on high-dimensional tabular financial data (`bank-additional-full.csv`, 41,188 observations).
+
+### 8.1 Data Engineering & Stratified Protocol
+- **Partitioning:** The raw 41,188 observations were split into a strict **70% Training** (28,831 rows), **15% Validation** (6,179 rows), and **15% Test** (6,178 rows) stratified split based on the target `y` (term deposit subscription: 0 = "no", 1 = "yes", ~11.27% base rate).
+- **Features:** 66 engineered, imputed, and normalized features (`data/training_preprocessed.csv`, `data/validation_preprocessed.csv`, `data/test_preprocessed.csv`):
+  - Binary and ordinal encoding: `default`, `housing`, `loan`, `contact`, `pdays_contacted`, `was_previously_contacted`, `education_ordinal` (0-6).
+  - Domain features: `campaign_capped`, `contact_frequency_ratio`, `economic_pressure_index`, `age_bucket`, `duration_bucket`, `month_quarter`.
+  - Missing value imputation: Distance-weighted KNN ($k=7$) for demographic/credit NaNs.
+  - Categorical expansion: One-hot vectors for `job`, `marital`, `month`, `day_of_week`, and `poutcome`.
+  - Power transformation: Yeo-Johnson standardization projecting continuous macro/engagement indicators onto quasi-Gaussian distributions.
+- **Zero-Leakage Invariant:** All transformations and imputers were fitted exclusively on `training.csv` and serialized to `data/bank_preprocessor.joblib`.
+
+### 8.2 The Five Core Workflows
+
+Reproducing the five reference workflows established for MNIST:
+
+| Workflow | Script | Verified PowerShell Command | Description |
+| :--- | :--- | :--- | :--- |
+| **Exp 1: Baseline ANN + BP** | `experiments/bank_experiments/baseline_ann.py` | `.\.venv\Scripts\python.exe -m experiments.bank_experiments.baseline_ann --seed 42 --epochs 15` | Full-precision FP32 network (66 -> 64 -> 2) with Adam and backprop. Establishes the continuous upper bound. |
+| **Exp 2: BNN + BP (STE)** | `experiments/bank_experiments/bnn_bp.py` | `.\.venv\Scripts\python.exe -m experiments.bank_experiments.bnn_bp --seed 42 --epochs 15` | Binarized network (`BinaryLinear`, weights in {-1, +1}) trained with backprop and Straight-Through Estimator. |
+| **Exp 3: BNN + DFA** | `experiments/bank_experiments/bnn_dfa.py` | `.\.venv\Scripts\python.exe -m experiments.bank_experiments.bnn_dfa --seed 42 --epochs 15` | BNN where output error is projected directly to hidden layer via fixed random feedback matrix B in R^(2x64). |
+| **Exp 4: BNN + DFA + QUBO** | `experiments/bank_experiments/bnn_dfa_qubo.py` | `.\.venv\Scripts\python.exe -m experiments.bank_experiments.bnn_dfa_qubo --seed 42 --epochs 15 --num-reads 50 --num-sweeps 500` | Standalone pipeline: trains BNN-DFA, extracts hidden representations, solves binary heads with D-Wave Neal simulated annealing, refits scale/bias. |
+| **Exp 5: Shared Head Comparison** | `experiments/bank_experiments/compare_ls_binary_qubo_shared.py` | `.\.venv\Scripts\python.exe -m experiments.bank_experiments.compare_ls_binary_qubo_shared --seed 42 --epochs 15` | Controlled benchmark: trains ONE BNN-DFA backbone per seed, freezes it, extracts H_train, H_val, H_test, and evaluates Real Ridge LS, Binarized Ridge LS, and QUBO Binary on identical representations. |
+
+### 8.3 QUBO Validation-Only Tuning Invariant
+To ensure strict out-of-sample validity:
+- Hyperparameters (`num_reads`, `num_sweeps`, and `scale_multiplier`) are tuned across a candidate grid exclusively on validation representations ($H_{\text{val}}, y_{\text{val}}$) via `experiments/bank_experiments/tune_qubo_validation.py`.
+- The winning configuration is then evaluated on the untouched test representation ($H_{\text{test}}, y_{\text{test}}$).
+
+### 8.4 Representation Caching & Integrity
+- Cached representation tensors are saved to `data/bank_representations/bank_repr_seed_{seed}_epochs_{epochs}.pt` with companion JSON provenance metadata and SHA-256 fingerprints.
+- Subsequent runs automatically detect and reuse the cached representations (`reused`), reducing runtimes from minutes to seconds.
+
+### 8.5 Verification & Unit Tests
+Run the comprehensive Bank dataset test suite:
+```powershell
+.\.venv\Scripts\python.exe -m unittest tests/test_bank_pipeline.py
+```
+Or execute the full repository test suite:
+```powershell
+.\.venv\Scripts\python.exe -m unittest discover -s tests -p "test_*.py"
+```
+
+All results are automatically appended to `data/results/bank_results.csv` with complete platform, timing, parameter counts, and tabular evaluation metrics (Accuracy, Balanced Accuracy, F1, ROC-AUC, PR-AUC).
