@@ -2,10 +2,11 @@
 
 Research code for comparing Binarized Neural Networks (BNNs), Direct Feedback Alignment (DFA), and classifier heads, including least-squares (LS), binary, straight-through estimator (STE), and QUBO/Ising heads.
 
-This repository contains **three distinct experiment tracks**:
+This repository contains **four distinct experiment tracks**:
 
 - **MNIST:** ten-class digit classification with BNN backpropagation, DFA, LS-derived heads, STE, and QUBO.
 - **Stroke:** binary stroke prediction with saved preprocessing metadata, stratified train/validation/test splits, optional training-only class balancing, and five DFA classifier heads.
+- **CIFAR-10:** ten-class RGB image classification with a convolutional BNN backbone, layer-wise Direct Feedback Alignment (DFA), 128-dimensional frozen representation caching, and comparative evaluation of five classifier heads (Real Ridge LS, Binarized Ridge LS, Direct Binary, STE Binary, and QUBO Binary).
 - **Bank Marketing:** tabular binary prediction of term deposit subscriptions using 66 engineered/normalized features across a strict zero-leakage 70/15/15 stratified protocol, with full reproduction of the five core BNN-DFA-QUBO workflows.
 
 Run commands from the repository root. Generated data, representations, and experiment outputs are local files and are not committed by default.
@@ -564,3 +565,135 @@ Or execute the full repository test suite:
 ```
 
 All results are automatically appended to `data/results/bank_results.csv` with complete platform, timing, parameter counts, and tabular evaluation metrics (Accuracy, Balanced Accuracy, F1, ROC-AUC, PR-AUC).
+
+## 9. CIFAR-10 experiment track
+
+The CIFAR-10 experiment track extends the BNN-DFA-QUBO framework to full RGB computer vision, evaluating how different binary classifier-head optimization strategies perform on frozen representations learned by a convolutional Binary Neural Network trained with layer-wise Direct Feedback Alignment (DFA).
+
+### 9.1 Dataset description and splitting
+
+- **Standard CIFAR-10:** 50,000 training images and 10,000 official test images across 10 balanced classes (32 × 32 × 3 RGB).
+- **Stratified Split:** 45,000 training images and 5,000 validation images (10% stratified holdout from official training data), leaving the 10,000 official test images strictly untouched for final evaluation.
+- **Preprocessing & Normalization:** RGB channel mean `(0.4914, 0.4822, 0.4465)` and standard deviation `(0.2470, 0.2435, 0.2616)`.
+- **Data Augmentation:** Random crop (`32 × 32` with 4-pixel reflection padding) and random horizontal flip applied **strictly** during backbone training. Validation, testing, and representation feature extraction use deterministic unaugmented preprocessing.
+
+### 9.2 Model architecture (`models/cifar_bnn.py`)
+
+The convolutional BNN preserves spatial feature hierarchies while binarizing layer weights during forward inference:
+
+```text
+Input: [B, 3, 32, 32]
+  │
+BinaryConv2d(3 -> 32, kernel=3, stride=2, padding=1)  [896 params]
+  │
+ReLU -> Activation shape: [B, 32, 16, 16] (8,192 hidden features per sample)
+  │
+BinaryConv2d(32 -> 64, kernel=3, stride=2, padding=1) [18,496 params]
+  │
+ReLU -> Activation shape: [B, 64, 8, 8] (4,096 hidden features per sample)
+  │
+Global Average Pooling (AdaptiveAvgPool2d(1, 1)) -> [B, 64]
+  │
+BinaryLinear(64 -> 128)                               [8,320 params]
+  │
+ReLU -> Frozen 128-dimensional representation: [B, 128]
+  │
+BinaryLinear(128 -> 10)                               [1,290 params]
+  │
+Output Logits: [B, 10]
+```
+- **Total Backbone Parameters:** 29,002.
+- **Binarization Convention:** Real-valued latent weights maintained for optimization; forward weights scaled as $W_{\text{bin}} = \text{sign}(W) \cdot \text{mean}(|W|)$; gradients flow to latent weights via the Straight-Through Estimator (STE). Activations remain continuous standard ReLU.
+
+### 9.3 Direct Feedback Alignment for CNN (`models/cifar_dfa.py`)
+
+Rather than sequentially propagating errors through the convolutional trunk, layer-wise DFA projects the classification error vector $e = \frac{1}{B}(\text{softmax}(\hat{y}) - Y) \in \mathbb{R}^{B \times 10}$ directly to each hidden layer through fixed, non-trainable random feedback matrices:
+
+- **Conv 1 Feedback ($B_{\text{conv1}} \in \mathbb{R}^{10 \times 8192}$):**
+  $$\delta_{\text{conv1}} = \text{reshape}(e B_{\text{conv1}}, [B, 32, 16, 16]) \odot \mathbf{1}_{\{z_{\text{conv1}} > 0\}}$$
+  $$\nabla_{W_{\text{conv1}}} = \text{conv2d\_weight}(x_{\text{input}}, W_{\text{conv1}}.\text{shape}, \delta_{\text{conv1}}, \text{stride}=2, \text{padding}=1)$$
+- **Conv 2 Feedback ($B_{\text{conv2}} \in \mathbb{R}^{10 \times 4096}$):**
+  $$\delta_{\text{conv2}} = \text{reshape}(e B_{\text{conv2}}, [B, 64, 8, 8]) \odot \mathbf{1}_{\{z_{\text{conv2}} > 0\}}$$
+  $$\nabla_{W_{\text{conv2}}} = \text{conv2d\_weight}(a_{\text{conv1}}, W_{\text{conv2}}.\text{shape}, \delta_{\text{conv2}}, \text{stride}=2, \text{padding}=1)$$
+- **Dense Feedback ($B_{\text{dense}} \in \mathbb{R}^{10 \times 128}$):**
+  $$\delta_{\text{dense}} = (e B_{\text{dense}}) \odot \mathbf{1}_{\{z_{\text{dense}} > 0\}}$$
+  $$\nabla_{W_{\text{fc1}}} = \delta_{\text{dense}}^T a_{\text{gap}}$$
+- **Output Layer:** Standard exact cross-entropy gradient $\nabla_{W_{\text{fc2}}} = e^T a_{\text{dense}}$.
+
+No gradient signals backpropagate across intermediate layers; all hidden layers compute local parameter updates purely from their direct feedback signals and forward inputs.
+
+### 9.4 Representation pipeline and caching
+
+Representations are cached in `data/cifar10_representations/` per seed and configuration:
+- `H_train`: `[45000, 128]`, `y_train`: `[45000]`
+- `H_validation`: `[5000, 128]`, `y_validation`: `[5000]`
+- `H_test`: `[10000, 128]`, `y_test`: `[10000]`
+
+Artifacts enforce:
+- SHA-256 tensor digest and metadata binding.
+- Raw dataset fingerprinting over image arrays and label vectors.
+- Strict validation upon loading (rejecting corrupted files, shape mismatches, or label misalignments).
+- Atomic exclusive file creation (`xb`) preventing silent overwrites.
+
+### 9.5 Five classifier-head methods compared
+
+All five heads operate on the identical 128-dimensional frozen representation:
+
+1. **Real Least Squares (Ridge LS):** Augmented float64 SVD solve with unpenalized intercept and relative ridge regularization ($\lambda=10^{-4}$).
+2. **Binarized Least Squares:** Signs of Ridge-LS weights projected to $\{-1, +1\}$ with per-class continuous scale and bias refit on training features.
+3. **Direct Binary:** Continuous `tanh(latent)` relaxation optimized with Adam, followed by hard sign thresholding.
+4. **STE Binary:** Straight-Through Estimator with validation-only checkpoint selection (best validation epoch).
+5. **QUBO Binary:** One binary spin vector per class optimized via classical simulated annealing (`dwave-neal`), initialized with class-specific Ridge scales $\alpha_c$, followed by post-annealing scale and bias fitting.
+
+### 9.6 Execution commands
+
+```bash
+# 1. Run canonical 5-head comparison on one seed
+python -m experiments.CIFAR10_experiments.run_cifar10_shared_validation --seed 42 --epochs 20
+
+# 2. Run multi-seed controlled experiment across 5 seeds
+python -m experiments.CIFAR10_experiments.run_cifar10_controlled --seeds 42 123 456 789 999 --epochs 20
+
+# 3. Individual head scripts
+python -m experiments.CIFAR10_experiments.cifar_dfa_least_squares --seed 42
+python -m experiments.CIFAR10_experiments.cifar_dfa_binarized_ls --seed 42
+python -m experiments.CIFAR10_experiments.cifar_dfa_direct_binary --seed 42
+python -m experiments.CIFAR10_experiments.cifar_dfa_ste_binary --seed 42
+python -m experiments.CIFAR10_experiments.cifar_dfa_qubo --seed 42
+
+# 4. Aggregate results and generate figures
+python -m experiments.CIFAR10_experiments.collect_results
+python -m experiments.CIFAR10_experiments.plot_results
+```
+
+### 9.7 Test suite commands
+
+Run the full unified test suite (MNIST + Stroke + CIFAR-10, 82 tests):
+```bash
+python -m unittest discover tests
+```
+
+Or run CIFAR-10 test modules individually:
+```bash
+python -m unittest tests/test_cifar10_data.py
+python -m unittest tests/test_cifar_bnn.py
+python -m unittest tests/test_cifar_dfa.py
+python -m unittest tests/test_cifar10_representation.py
+python -m unittest tests/test_cifar10_heads.py
+python -m unittest tests/test_cifar10_runner.py
+```
+
+### 9.8 Result locations
+
+- `data/cifar10/raw/`: Raw downloaded CIFAR-10 archives.
+- `data/cifar10_representations/`: Cached representation artifacts (`.pt`).
+- `data/results/cifar10_results.csv`: Standardized log of individual CIFAR runs.
+- `data/results/cifar10_controlled_results.csv`: Aggregate multi-seed controlled run records.
+- `data/results/cifar10_main_classification_results.csv`: Main classification summary table (mean ± std).
+- `data/results/cifar10_computational_cost_results.csv`: Runtime and parameter count summary.
+- `data/results/cifar10_figures/`: Publication-ready figures.
+
+### 9.9 Status of experiments
+
+- **Completed:** Full pipeline implementation, layer-wise convolutional DFA mathematical engine, representation caching protocol, 5-head comparative solvers, validation tuning, multi-seed controlled runner, result logging/plotting utilities, and comprehensive unit/integration test suites (all 82 tests passing).
+- **Planned / Pending Execution:** Full-dataset multi-seed long-running training runs (e.g. 50 epochs over all 5 seeds on hardware GPU/MPS).
