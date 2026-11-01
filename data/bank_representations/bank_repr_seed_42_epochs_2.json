@@ -1,0 +1,45 @@
+{
+  "version": "bank-bnn-dfa-representation-v1",
+  "seed": 42,
+  "epochs": 2,
+  "batch_size": 64,
+  "learning_rate": 0.001,
+  "hidden_size": 64,
+  "device": "cpu",
+  "preprocessing": {
+    "feature_count": 66,
+    "yeo_johnson": true,
+    "knn_imputed": true,
+    "one_hot_encoded": true
+  },
+  "backbone": {
+    "class": "models.bank_bnn.BankBNN",
+    "fc1": {
+      "in_features": 66,
+      "out_features": 64,
+      "activation": "relu"
+    },
+    "fc2": {
+      "in_features": 64,
+      "out_features": 2
+    },
+    "training_method": "BankDFA"
+  },
+  "dataset_fingerprint": "1e64bba1e2e46acd2ef05f20e9e1efb09275ba76ec0e91476a154a25c9640db7",
+  "provenance": {
+    "git_commit_sha": "0d1e04fc1e58f91277042d195e0bcc174f78f46d",
+    "git_worktree_dirty": true,
+    "git_worktree_fingerprint": "5f9b7260e697b3fe00df6e2afadc8c86b6b5119a42e84939ee5756dffb4448da",
+    "python_version": "3.13.7",
+    "os_platform": "Windows-11-10.0.26200-SP0",
+    "device": "unavailable",
+    "package_versions": {
+      "torch": "2.15.0",
+      "torchvision": "0.29.2",
+      "numpy": "2.5.4",
+      "scikit_learn": "1.9.1",
+      "pandas": "3.1.0",
+      "neal": "0.6.0"
+    }
+  }
+}
