@@ -6,8 +6,10 @@ The test split is never accessed during candidate generation or selection.
 from __future__ import annotations
 
 import argparse
+import csv
 from datetime import datetime
 import json
+import os
 from pathlib import Path
 import time
 from typing import Any
@@ -26,6 +28,7 @@ from models.qubo_head import (
 from utils.CIFAR10.representation import DEFAULT_REPRESENTATION_DIR
 from utils.run_provenance import collect_run_provenance, stable_run_id
 
+DEFAULT_TUNING_OUTPUT_DIR = Path("data/results_diagnostic/cifar10_qubo")
 DEFAULT_NUM_READS = (25, 50, 100)
 DEFAULT_NUM_SWEEPS = (250, 500, 1000)
 DEFAULT_SCALE_MULTIPLIERS = (0.5, 1.0, 2.0)
@@ -193,28 +196,47 @@ def write_tuning_csv(
     seed: int,
     epochs: int,
     validation_fraction: float,
-    output_dir: Path | str = Path("data/results_diagnostic"),
+    output_dir: Path | str = DEFAULT_TUNING_OUTPUT_DIR,
     representation_artifact_id: str = "",
     n_train: int | None = None,
     n_validation: int | None = None,
     n_test: int | None = None,
 ) -> Path:
-    out_dir = Path(output_dir)
+    """Record candidate-level QUBO validation tuning diagnostics.
+
+    Saves configuration metadata, search grid parameters, candidate validation
+    accuracies, selection status, runtimes, and errors. Test accuracy is strictly
+    excluded to prevent test-set leakage in configuration selection.
+    """
+    if str(output_dir) == str(DEFAULT_TUNING_OUTPUT_DIR) and "CIFAR10_QUBO_TUNING_DIR" in os.environ:
+        out_dir = Path(os.environ["CIFAR10_QUBO_TUNING_DIR"])
+    else:
+        out_dir = Path(output_dir)
+
     out_dir.mkdir(parents=True, exist_ok=True)
     stamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
-    csv_path = out_dir / f"cifar10_qubo_tuning_seed_{seed}_{stamp}.csv"
+    val_str = f"{float(validation_fraction):.4f}".replace(".", "p")
+    art_str = str(representation_artifact_id) if representation_artifact_id else "unknown"
+    csv_path = out_dir / f"cifar10_qubo_tuning_seed_{seed}_epochs_{epochs}_val_{val_str}_art_{art_str}_{stamp}.csv"
 
     fieldnames = [
         "seed",
+        "epochs",
+        "validation_fraction",
+        "representation_artifact_id",
+        "n_train",
+        "n_validation",
+        "n_test",
         "num_reads",
         "num_sweeps",
         "scale_multiplier",
         "solver_seed",
         "validation_accuracy",
         "selected",
-        "status",
         "runtime_sec",
+        "selected_candidate_runtime_sec",
         "tuning_total_seconds",
+        "status",
         "error",
     ]
 
@@ -222,6 +244,26 @@ def write_tuning_csv(
         writer = csv.DictWriter(handle, fieldnames=fieldnames, extrasaction="ignore")
         writer.writeheader()
         for r in rows:
-            writer.writerow(r)
+            row_dict = {
+                "seed": seed,
+                "epochs": epochs,
+                "validation_fraction": validation_fraction,
+                "representation_artifact_id": representation_artifact_id,
+                "n_train": "" if n_train is None else n_train,
+                "n_validation": "" if n_validation is None else n_validation,
+                "n_test": "" if n_test is None else n_test,
+                "num_reads": r.get("num_reads", ""),
+                "num_sweeps": r.get("num_sweeps", ""),
+                "scale_multiplier": r.get("scale_multiplier", ""),
+                "solver_seed": r.get("solver_seed", ""),
+                "validation_accuracy": r.get("validation_accuracy", 0.0),
+                "selected": r.get("selected", False),
+                "runtime_sec": r.get("runtime_sec", 0.0),
+                "selected_candidate_runtime_sec": r.get("selected_candidate_runtime_sec", ""),
+                "tuning_total_seconds": r.get("tuning_total_seconds", ""),
+                "status": r.get("status", "unknown"),
+                "error": r.get("error", ""),
+            }
+            writer.writerow(row_dict)
 
     return csv_path

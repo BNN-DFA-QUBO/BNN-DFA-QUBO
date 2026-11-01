@@ -6,6 +6,7 @@ followed by class-specific continuous scale and bias fitting.
 from __future__ import annotations
 
 import argparse
+import os
 from pathlib import Path
 import time
 import torch
@@ -135,6 +136,19 @@ def main():
             H_train, y_train, H_val, y_val, args.seed,
             args.num_reads_grid, args.num_sweeps_grid, args.scale_multipliers,
         )
+        tuning_csv_path = write_tuning_csv(
+            rows=tuning_rows,
+            seed=args.seed,
+            epochs=args.epochs,
+            validation_fraction=args.validation_fraction,
+            output_dir=Path(os.environ.get("CIFAR10_QUBO_TUNING_DIR", "data/results_diagnostic/cifar10_qubo")),
+            representation_artifact_id=representation.get("artifact_id", ""),
+            n_train=len(y_train),
+            n_validation=len(y_val),
+            n_test=len(y_test),
+        )
+        print(f"[QUBO-TUNE] Saved candidate tuning CSV to {tuning_csv_path}")
+
         if winner is None:
             raise RuntimeError("All QUBO tuning candidates failed")
         w_bin, scales, biases = winner["_weights"], winner["_scales"], winner["_bias"]
@@ -181,7 +195,16 @@ def main():
         total_parameter_count=backbone_params + head_params,
         pipeline_timing_status="complete",
         qubo_time_sec=fit_time,
+        qubo_selected_candidate_time_sec=float(winner["selected_candidate_runtime_sec"]) if (winner and winner.get("selected_candidate_runtime_sec")) else None,
         qubo_tuning_enabled=args.qubo_tuning,
+        qubo_num_reads_selected=winner["num_reads"] if winner else args.num_reads,
+        qubo_num_sweeps_selected=winner["num_sweeps"] if winner else args.num_sweeps,
+        qubo_scale_multiplier_selected=float(winner["scale_multiplier"]) if winner else None,
+        qubo_solver_seed_selected=winner["solver_seed"] if winner else None,
+        qubo_validation_accuracy=winner["validation_accuracy"] if winner else val_acc,
+        qubo_validation_fraction=args.validation_fraction,
+        qubo_grid_size=len(tuning_rows) if tuning_rows else 1,
+        qubo_selection_metric="validation_accuracy" if args.qubo_tuning else "",
         representation_artifact_id=representation["artifact_id"],
         representation_path=str(rep_path.resolve()),
         representation_cache_status=rep_source,

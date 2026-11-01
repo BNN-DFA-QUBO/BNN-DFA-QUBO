@@ -16,6 +16,39 @@ All five classifier heads are evaluated on the exact same frozen representation 
 4. **STE Binary**: Straight-Through Estimator with validation-only checkpoint selection.
 5. **QUBO Binary**: Ising Hamiltonian formulation with class-specific scales, solved via classical simulated annealing (`dwave-neal`), followed by post-annealing scale and bias fitting.
 
+## Experimental Tracks: Baseline vs. opt_control Stabilization
+
+The CIFAR-10 investigation includes two distinct experimental configurations that address separate research questions. **These are separate experimental configurations and their results must not be conflated.**
+
+| Configuration Parameter | Original Baseline (`experiments/CIFAR10_experiments/`) | Stabilized `opt_control` (`experiments/CIFAR10_experiments/stabilization/`) |
+|:---|:---|:---|
+| **Learning Rate** | `0.001` ($10^{-3}$) | `0.0001` ($10^{-4}$) |
+| **Gradient Clipping** | None (unclipped) | `1.0` (max norm clipping) |
+| **Weight Decay** | None ($0.0$) | `0.0001` ($10^{-4}$, on latent weights) |
+| **Loss & Activation Behavior** | Activation norm grows ($H_{\text{norm}} \to 4,335.2$), loss inflates | Bounded activation norm ($H_{\text{norm}} \approx 109.1$), loss stable ($\approx 2.41$) |
+| **Artifact Directory** | `data/cifar10_representations/` | `data/cifar10_stabilization/representations/` |
+| **Results Log** | `data/results/cifar10_results.csv` | `data/cifar10_stabilization/results/` |
+| **Purpose** | Evaluates original unregularized BNN-DFA dynamics on CIFAR-10 | Evaluates bounded BNN-DFA dynamics and tests stabilization regimes |
+
+### Conflation Warning
+- **Do not mix representations:** Baseline representations and stabilized representations are stored separately and must never be swapped across evaluation tracks.
+- **Do not confound head modifications with backbone stabilization:** The Direct Binary comparison between original unscaled baseline ($10.13\%$) and stabilized scale/bias-refitted head ($13.19\%$) is an end-to-end pipeline comparison. On identical stabilized representations, the isolated head change is $+1.68\%$ ($p = 0.1540$, not statistically significant).
+
+## QUBO Validation Tuning Diagnostics
+
+Whenever validation-based QUBO grid tuning is enabled (`--qubo-tuning` or `fixed_qubo=False`), candidate-level diagnostic records are logged via `write_tuning_csv()` to:
+```text
+data/results_diagnostic/cifar10_qubo/
+```
+
+Logged fields include:
+- Experiment metadata: seed, backbone training epochs, validation fraction, representation artifact ID, sample counts ($N_{\text{train}}, N_{\text{val}}, N_{\text{test}}$).
+- Grid parameters: `num_reads`, `num_sweeps`, `scale_multiplier`, `solver_seed`.
+- Candidate evaluation: `validation_accuracy`, `selected` flag, `runtime_sec`, `tuning_total_seconds`.
+- Health status: `status` (`ok` vs. `failed`) and `error` string.
+
+> **Methodological Rule:** Test accuracy is strictly excluded from candidate tuning CSVs and selection routines to guarantee zero test-set leakage.
+
 ## Directory Structure
 
 ```text

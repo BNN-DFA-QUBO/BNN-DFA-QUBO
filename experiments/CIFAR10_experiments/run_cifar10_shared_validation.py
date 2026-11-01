@@ -15,6 +15,7 @@ Rules:
 from __future__ import annotations
 
 import argparse
+import os
 from pathlib import Path
 import time
 from typing import Any, Dict, List
@@ -50,6 +51,7 @@ from experiments.CIFAR10_experiments.tune_qubo_validation import (
     _parse_grid,
     tune_from_representations,
     validate_grid,
+    write_tuning_csv,
 )
 from utils.CIFAR10.data import get_device
 from utils.CIFAR10.representation import DEFAULT_REPRESENTATION_DIR
@@ -282,6 +284,8 @@ def run_cifar10_shared_validation(
     # 5. QUBO Binary
     # ---------------------------------------------------------
     print("--- 5. QUBO Binary ---")
+    winner = None
+    rows = None
     if fixed_qubo:
         qubo_w, qubo_scale, qubo_bias, qubo_fit_time = fit_fixed_qubo(
             H_train, y_train, num_reads=num_reads, num_sweeps=num_sweeps, seed=seed
@@ -295,6 +299,18 @@ def run_cifar10_shared_validation(
             H_train, y_train, H_val, y_val, seed,
             num_reads_grid, num_sweeps_grid, scale_multipliers,
         )
+        tuning_csv_path = write_tuning_csv(
+            rows=rows,
+            seed=seed,
+            epochs=epochs,
+            validation_fraction=validation_fraction,
+            output_dir=Path(os.environ.get("CIFAR10_QUBO_TUNING_DIR", "data/results_diagnostic/cifar10_qubo")),
+            representation_artifact_id=artifact_id,
+            n_train=len(y_train),
+            n_validation=len(y_val),
+            n_test=len(y_test),
+        )
+        print(f"[QUBO-TUNE] Saved candidate tuning CSV to {tuning_csv_path}")
         if winner is None:
             raise RuntimeError("QUBO tuning yielded no valid solutions")
         qubo_w = winner["_weights"]
@@ -327,7 +343,16 @@ def run_cifar10_shared_validation(
         total_parameter_count=backbone_params + qubo_params,
         pipeline_timing_status="complete",
         qubo_time_sec=qubo_fit_time,
+        qubo_selected_candidate_time_sec=float(winner["selected_candidate_runtime_sec"]) if (winner and winner.get("selected_candidate_runtime_sec")) else None,
         qubo_tuning_enabled=not fixed_qubo,
+        qubo_num_reads_selected=winner["num_reads"] if winner else num_reads,
+        qubo_num_sweeps_selected=winner["num_sweeps"] if winner else num_sweeps,
+        qubo_scale_multiplier_selected=float(winner["scale_multiplier"]) if winner else None,
+        qubo_solver_seed_selected=winner["solver_seed"] if winner else None,
+        qubo_validation_accuracy=qubo_val,
+        qubo_validation_fraction=validation_fraction,
+        qubo_grid_size=len(rows) if not fixed_qubo and rows else 1,
+        qubo_selection_metric="validation_accuracy" if not fixed_qubo else "",
         representation_artifact_id=artifact_id,
         representation_path=str(rep_path.resolve()),
         representation_cache_status=rep_source,
