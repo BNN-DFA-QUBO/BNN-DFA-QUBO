@@ -95,18 +95,16 @@ def _validate_representation_arrays(data):
     return True
 
 
-def save_representation(result, path, feature_names=None):
-    path = Path(path)
-    path.parent.mkdir(parents=True, exist_ok=True)
-
+def build_in_memory_representation(result, feature_names=None):
+    """Package train_dfa output into a verified in-memory representation dict without writing to disk."""
     names = list(feature_names or result.get("feature_names", []))
     if not names:
-        raise ValueError("Cannot save a stroke representation without its fitted feature names")
+        raise ValueError("Cannot package stroke representation without fitted feature names")
     metadata = result.get("data_metadata")
     if not metadata:
-        raise ValueError("Cannot save a stroke representation without preprocessing provenance")
+        raise ValueError("Cannot package stroke representation without preprocessing provenance")
     if metadata.get("preprocessing_version") != PREPROCESSING_VERSION:
-        raise ValueError("Cannot save a representation with an incompatible preprocessing version")
+        raise ValueError("Cannot package representation with incompatible preprocessing version")
     data = {
         "representation_version": REPRESENTATION_VERSION,
         "seed": result["seed"],
@@ -128,17 +126,17 @@ def save_representation(result, path, feature_names=None):
         "H_test": result["H_test"],
 
         "y_train": torch.tensor(
-            result["y_train"].values,
+            result["y_train"].values if hasattr(result["y_train"], "values") else result["y_train"],
             dtype=torch.float32
         ),
 
         "y_val": torch.tensor(
-            result["y_val"].values,
+            result["y_val"].values if hasattr(result["y_val"], "values") else result["y_val"],
             dtype=torch.float32
         ),
 
         "y_test": torch.tensor(
-            result["y_test"].values,
+            result["y_test"].values if hasattr(result["y_test"], "values") else result["y_test"],
             dtype=torch.float32
         )
     }
@@ -154,9 +152,16 @@ def save_representation(result, path, feature_names=None):
     if int(data["H_train"].shape[1]) != int(data["hidden_size"]):
         raise ValueError("Representation hidden dimension does not match saved configuration")
     if not _validate_representation_arrays(data):
-        raise ValueError("Cannot save a verified Stroke representation without persisted labels for each split row ID")
+        raise ValueError("Cannot build a verified Stroke representation without persisted labels for each split row ID")
     data["representation_sha256"] = _representation_digest(data)
     data["integrity_status"] = "content_and_row_id_verified"
+    return data
+
+
+def save_representation(result, path, feature_names=None):
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    data = build_in_memory_representation(result, feature_names=feature_names)
     created = False
     try:
         with path.open("xb") as output:
@@ -171,11 +176,14 @@ def save_representation(result, path, feature_names=None):
 
 def load_representation(path, expected_metadata=None, expected_seed=None,
                         expected_training_config=None, expected_hidden_size=None):
-    data = torch.load(
-        path,
-        map_location="cpu",
-        weights_only=False
-    )
+    if isinstance(path, dict):
+        data = path
+    else:
+        data = torch.load(
+            path,
+            map_location="cpu",
+            weights_only=False
+        )
     version = data.get("representation_version")
     if version not in {REPRESENTATION_VERSION, LEGACY_REPRESENTATION_VERSION}:
         raise ValueError("Unsupported or stale stroke representation; regenerate it with the current preprocessing pipeline")
@@ -186,7 +194,7 @@ def load_representation(path, expected_metadata=None, expected_seed=None,
         raise ValueError("Representation preprocessing version disagrees with its embedded metadata")
     if metadata.get("dataset_sha256") != data.get("dataset_sha256") or metadata.get("split_seed") != data.get("split_seed"):
         raise ValueError("Representation dataset hash or split seed disagrees with its metadata")
-    representation_metadata_path = Path(path).parent / METADATA_PATH.name
+    representation_metadata_path = (Path(path).parent / METADATA_PATH.name) if not isinstance(path, dict) else METADATA_PATH
     current_metadata_path = representation_metadata_path if representation_metadata_path.is_file() else METADATA_PATH
     if expected_metadata is None and current_metadata_path.is_file():
         current = json.loads(current_metadata_path.read_text(encoding="utf-8"))

@@ -502,13 +502,11 @@ def evaluate_training_fit(
 
 if __name__ == "__main__":
 
-    parser = argparse.ArgumentParser(description="MNIST BNN+DFA with LS/Ridge-LS head")
+    parser = argparse.ArgumentParser(description="MNIST BNN+DFA with Ridge-LS head")
     parser.add_argument("--seed", type=int, default=42)
-    parser.add_argument("--ls-solver", choices=("ridge", "legacy"), default="ridge",
-                        help="ridge: stable float64 Ridge LS; legacy: original float32 default LS")
     args = parser.parse_args()
     seed = args.seed
-    ls_solver = args.ls_solver
+    ls_solver = "ridge"
     set_seed(seed)
 
     print(f"Using seed: {seed}")
@@ -594,22 +592,13 @@ if __name__ == "__main__":
     if device.type == "cuda":
         torch.cuda.synchronize(device)
     with Timer() as head_fit_timer:
-        if ls_solver == "ridge":
-            print("\nFitting numerically stable Ridge LS classifier...")
-            classifier = fit_least_squares_classifier(
-                H=H_train, labels=y_train, num_classes=10
-            )
-            head_name = "Ridge LS"
-            method_name = "BNN + DFA + Ridge LS Head"
-            summary_head_name = "BNN + DFA + Ridge LS Head"
-        else:
-            print("\nFitting legacy float32 least-squares classifier...")
-            classifier = fit_legacy_least_squares_classifier(
-                H=H_train, labels=y_train, num_classes=10
-            )
-            head_name = "Legacy LS"
-            method_name = "BNN + DFA + Real-Valued LS Head (legacy)"
-            summary_head_name = "BNN + DFA + Real-Valued LS Head (legacy)"
+        print("\nFitting numerically stable Ridge LS classifier...")
+        classifier = fit_least_squares_classifier(
+            H=H_train, labels=y_train, num_classes=10
+        )
+        head_name = "Ridge LS"
+        method_name = "BNN + DFA + Ridge LS Head"
+        summary_head_name = "BNN + DFA + Ridge LS Head"
     if device.type == "cuda":
         torch.cuda.synchronize(device)
 

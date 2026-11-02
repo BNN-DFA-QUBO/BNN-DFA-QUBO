@@ -51,41 +51,54 @@ def compute_classification_metrics(
     return res
 
 
-def find_best_threshold(y_true: np.ndarray, scores: np.ndarray) -> float:
-    """Find the score threshold that maximizes validation balanced accuracy."""
-    y_true = np.asarray(y_true, dtype=int).reshape(-1)
-    scores = np.asarray(scores, dtype=float).reshape(-1)
+def find_best_threshold(y_true: np.ndarray | list, scores: np.ndarray | list, thresholds: np.ndarray | list | None = None) -> float:
+    """Find the exact score threshold that maximizes validation balanced accuracy in O(N log N).
 
-    # Evaluate unique candidate thresholds
-    sorted_indices = np.argsort(scores)
-    sorted_scores = scores[sorted_indices]
-    sorted_labels = y_true[sorted_indices]
+    Evaluates every distinct decision boundary across all sorted score values,
+    avoiding any heuristic down-sampling or quantile approximations.
+    """
+    y_true = np.asarray(y_true).reshape(-1)
+    scores = np.asarray(scores, dtype=np.float64).reshape(-1)
+    if len(y_true) == 0 or len(y_true) != len(scores):
+        raise ValueError("y_true and scores must be non-empty and have equal length")
+    if not np.isfinite(scores).all():
+        raise ValueError("Threshold selection requires finite scores")
 
-    n_pos = np.sum(sorted_labels == 1)
-    n_neg = len(sorted_labels) - n_pos
+    if thresholds is not None:
+        thresholds = np.asarray(thresholds, dtype=np.float64).reshape(-1)
+        if len(thresholds) == 0 or not np.isfinite(thresholds).all():
+            raise ValueError("Explicit thresholds must be non-empty and finite")
+        best_threshold = float(thresholds[0])
+        best_ba = -1.0
+        for threshold in thresholds:
+            predictions = (scores >= threshold).astype(int)
+            ba = balanced_accuracy_score(y_true, predictions)
+            if ba > best_ba:
+                best_ba = float(ba)
+                best_threshold = float(threshold)
+        return best_threshold
 
+    n_pos = int(np.sum(y_true == 1))
+    n_neg = int(np.sum(y_true == 0))
     if n_pos == 0 or n_neg == 0:
         return 0.0
 
-    # Scan unique thresholds
-    unique_thresholds = np.unique(sorted_scores)
-    if len(unique_thresholds) > 1000:
-        # Sample quantiles if too many unique values
-        unique_thresholds = np.quantile(sorted_scores, np.linspace(0.01, 0.99, 500))
+    order = np.argsort(scores, kind="mergesort")
+    sorted_scores = scores[order]
+    sorted_y = y_true[order]
+    group_ends = np.r_[np.flatnonzero(np.diff(sorted_scores) != 0), len(scores) - 1]
 
-    best_thresh = 0.0
-    best_ba = -1.0
+    cumulative_positive = np.cumsum(sorted_y == 1)
+    cumulative_negative = np.cumsum(sorted_y == 0)
+    positive_below = np.r_[0, cumulative_positive[group_ends[:-1]]]
+    negative_below = np.r_[0, cumulative_negative[group_ends[:-1]]]
 
-    for thresh in unique_thresholds:
-        preds = (scores >= thresh).astype(int)
-        tp = np.sum((preds == 1) & (y_true == 1))
-        tn = np.sum((preds == 0) & (y_true == 0))
-        tpr = tp / n_pos
-        tnr = tn / n_neg
-        ba = 0.5 * (tpr + tnr)
-        if ba > best_ba:
-            best_ba = ba
-            best_thresh = float(thresh)
+    sensitivity = (n_pos - positive_below) / n_pos
+    specificity = negative_below / n_neg
+    balanced_accuracy = (sensitivity + specificity) / 2.0
 
-    return best_thresh
+    candidate_scores = np.r_[sorted_scores[group_ends], np.nextafter(sorted_scores[-1], np.inf)]
+    candidate_ba = np.r_[balanced_accuracy, 0.5]
+    best_index = int(np.argmax(candidate_ba))
 
+    return float(candidate_scores[best_index])

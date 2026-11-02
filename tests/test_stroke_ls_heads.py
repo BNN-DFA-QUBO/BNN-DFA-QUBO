@@ -2,7 +2,7 @@
 
 These tests do not download data or train a BNN/DFA representation.
 Run with:
-    python -m unittest experiments.stroke_experiments.test_stroke_ls_heads
+    python -m unittest tests.test_stroke_ls_heads
 """
 import unittest
 
@@ -11,13 +11,7 @@ import torch
 
 from models.ls_heads import fit_ridge_classifier, fit_ridge_regression
 from utils.stroke_metrics import find_best_threshold
-from experiments.stroke_experiments.validate_stroke_ls_heads import (
-    fit_legacy_ls,
-    fit_legacy_binarized_ls,
-    fit_ridge_ls,
-    fit_ridge_binarized_ls,
-    score_continuous,
-)
+from experiments.stroke_experiments.stroke_dfa_binarized_ls import fit_binarized_ridge_ls
 
 
 class RidgeRegressionTests(unittest.TestCase):
@@ -47,7 +41,6 @@ class RidgeRegressionTests(unittest.TestCase):
         hidden = torch.randn(32, 4, dtype=torch.float64)
         targets = torch.stack((hidden[:, 0] > 0, hidden[:, 1] > 0), dim=1).to(torch.float64)
         weights = fit_ridge_regression(hidden, targets, lambda_relative=1e-4)
-
         self.assertEqual(tuple(weights.shape), (5, 2))
         self.assertTrue(torch.isfinite(weights).all().item())
 
@@ -78,24 +71,17 @@ class StrokeHeadComparisonTests(unittest.TestCase):
         self.assertEqual(validation_ba, 1.0)
         np.testing.assert_array_equal((scores >= threshold).astype(int), y)
 
-    def test_all_head_fits_produce_finite_scores(self):
-        legacy = fit_legacy_ls(self.hidden, self.labels)
-        legacy_binary, legacy_bias = fit_legacy_binarized_ls(self.hidden, self.labels)
-        ridge = fit_ridge_ls(self.hidden, self.labels, lambda_relative=1e-4)
-        ridge_binary, scale, bias = fit_ridge_binarized_ls(self.hidden, self.labels, ridge)
-
-        continuous_scores = score_continuous(self.hidden, legacy)
-        ridge_scores = score_continuous(self.hidden, ridge)
-        legacy_binary_scores = self.hidden @ legacy_binary + legacy_bias
+    def test_ridge_head_fits_produce_finite_scores(self):
+        ridge_binary, scale, bias, full_weights = fit_binarized_ridge_ls(self.hidden, self.labels, lambda_relative=1e-4)
+        design = np.column_stack((self.hidden, np.ones(len(self.hidden), dtype=np.float64)))
+        ridge_scores = design @ full_weights
         ridge_binary_scores = (self.hidden @ ridge_binary) * scale + bias
 
-        for values in (continuous_scores, ridge_scores, legacy_binary_scores, ridge_binary_scores):
+        for values in (ridge_scores, ridge_binary_scores):
             self.assertTrue(np.isfinite(values).all())
             self.assertEqual(values.shape, (len(self.labels),))
 
-        self.assertEqual(legacy_binary.shape, (self.hidden.shape[1],))
         self.assertEqual(ridge_binary.shape, (self.hidden.shape[1],))
-        self.assertTrue(set(np.unique(legacy_binary)).issubset({-1.0, 1.0}))
         self.assertTrue(set(np.unique(ridge_binary)).issubset({-1.0, 1.0}))
         self.assertGreaterEqual(scale, 0.0)
 

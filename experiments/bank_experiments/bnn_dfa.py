@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import argparse
+import copy
+import numpy as np
 import torch
 import torch.nn as nn
 import torch.optim as optim
@@ -9,7 +11,7 @@ import torch.optim as optim
 from models.bank_bnn import BankBNN
 from models.bank_dfa import BankDFA, BankDFAFunction
 from utils.bank.data import get_bank_loaders, NUM_FEATURES, NUM_CLASSES
-from utils.bank.metrics import compute_classification_metrics
+from utils.bank.metrics import compute_classification_metrics, find_best_threshold
 from utils.bank.seed import set_seed
 from experiments.bank_experiments.results_utils import (
     append_bank_result,
@@ -49,16 +51,14 @@ def train_dfa_epoch(model, train_loader, optimizer, criterion, dfa, device):
         grad_hidden_weight = hidden_error.T @ x
         grad_hidden_bias = hidden_error.sum(dim=0)
 
-        # Scale by batch size matching mean loss convention
-        batch_size = labels.size(0)
-        model.fc1.weight.grad = grad_hidden_weight / batch_size
-        model.fc1.bias.grad = grad_hidden_bias / batch_size
-        model.fc2.weight.grad = grad_output_weight / batch_size
-        model.fc2.bias.grad = grad_output_bias / batch_size
+        model.fc1.weight.grad = grad_hidden_weight
+        model.fc1.bias.grad = grad_hidden_bias
+        model.fc2.weight.grad = grad_output_weight
+        model.fc2.bias.grad = grad_output_bias
 
         optimizer.step()
 
-        total_loss += loss.item() * batch_size
+        total_loss += loss.item() * labels.size(0)
         preds = outputs.argmax(dim=1)
         all_preds.extend(preds.cpu().numpy())
         all_labels.extend(labels.cpu().numpy())
@@ -91,7 +91,7 @@ def evaluate(model, loader, criterion, device):
 
     avg_loss = total_loss / len(loader.dataset)
     metrics = compute_classification_metrics(all_labels, all_preds, all_scores)
-    return avg_loss, metrics
+    return avg_loss, metrics, np.array(all_scores), np.array(all_labels)
 
 
 def run_bnn_dfa(
@@ -121,19 +121,40 @@ def run_bnn_dfa(
     criterion = nn.CrossEntropyLoss()
     optimizer = optim.Adam(model.parameters(), lr=lr)
 
+    best_val_ba = -1.0
+    best_state = None
+    best_thresh = 0.5
+
     with Timer() as training_timer:
         for epoch in range(epochs):
             train_loss, train_metrics = train_dfa_epoch(model, train_loader, optimizer, criterion, dfa, device)
-            val_loss, val_metrics = evaluate(model, val_loader, criterion, device)
+            val_loss, val_metrics, val_scores, val_labels = evaluate(model, val_loader, criterion, device)
+
+            cur_thresh = find_best_threshold(val_labels, val_scores)
+            cur_val_preds = (val_scores >= cur_thresh).astype(int)
+            cur_val_metrics = compute_classification_metrics(val_labels, cur_val_preds, val_scores)
+            cur_ba = cur_val_metrics["balanced_accuracy"]
+
+            if cur_ba > best_val_ba:
+                best_val_ba = cur_ba
+                best_thresh = cur_thresh
+                best_state = copy.deepcopy(model.state_dict())
+
             print(
                 f"Epoch {epoch + 1:02d}/{epochs:02d} | "
                 f"Train Loss: {train_loss:.4f} | Train Acc: {train_metrics['accuracy']:.2f}% | Train BA: {train_metrics['balanced_accuracy']:.2f}% | "
-                f"Val Loss: {val_loss:.4f} | Val Acc: {val_metrics['accuracy']:.2f}% | Val BA: {val_metrics['balanced_accuracy']:.2f}%"
+                f"Val Loss: {val_loss:.4f} | Val Acc: {cur_val_metrics['accuracy']:.2f}% | Val BA: {cur_ba:.2f}% (thresh: {cur_thresh:.4f})"
             )
 
-    test_loss, test_metrics = evaluate(model, test_loader, criterion, device)
+    if best_state is not None:
+        model.load_state_dict(best_state)
+
+    test_loss, _, test_scores, test_labels = evaluate(model, test_loader, criterion, device)
+    test_preds = (test_scores >= best_thresh).astype(int)
+    test_metrics = compute_classification_metrics(test_labels, test_preds, test_scores)
+
     print(
-        f"\nFinal Test Results: "
+        f"\nFinal Test Results (Threshold {best_thresh:.4f}): "
         f"Acc: {test_metrics['accuracy']:.2f}% | BA: {test_metrics['balanced_accuracy']:.2f}% | "
         f"F1: {test_metrics['f1']:.2f}% | ROC-AUC: {test_metrics.get('roc_auc', 0):.2f}% | PR-AUC: {test_metrics.get('pr_auc', 0):.2f}%"
     )
@@ -151,13 +172,13 @@ def run_bnn_dfa(
         roc_auc=test_metrics.get("roc_auc"),
         pr_auc=test_metrics.get("pr_auc"),
         test_loss=test_loss,
-        training_time_sec=training_timer.seconds,
+        training_time_sec=training_timer.elapsed,
         parameter_count=n_params,
-        backbone_training_time_sec=training_timer.seconds,
-        end_to_end_training_time_sec=training_timer.seconds,
-        current_run_total_time_sec=training_timer.seconds,
+        backbone_training_time_sec=training_timer.elapsed,
+        end_to_end_training_time_sec=training_timer.elapsed,
+        current_run_total_time_sec=training_timer.elapsed,
         total_parameter_count=n_params,
-        notes=f"epochs={epochs}, lr={lr}, hidden={hidden_size}",
+        notes=f"epochs={epochs}, lr={lr}, hidden={hidden_size}, thresh={best_thresh:.4f}",
     )
     return test_metrics
 
@@ -178,4 +199,3 @@ if __name__ == "__main__":
         lr=args.lr,
         hidden_size=args.hidden_size,
     )
-

@@ -25,13 +25,23 @@ RESULTS_CSV = Path(os.environ.get("BANK_RESULTS_CSV", RESULTS_DIR / "bank_result
 class Timer:
     """Context manager measuring wall-clock execution time."""
 
-    def __enter__(self):
+    def __init__(self) -> None:
+        self.seconds: float = 0.0
+        self._start: float | None = None
+
+    def __enter__(self) -> "Timer":
         self._start = time.perf_counter()
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb):
-        self._end = time.perf_counter()
-        self.seconds = self._end - self._start
+        if self._start is not None:
+            self.seconds = time.perf_counter() - self._start
+
+    @property
+    def elapsed(self) -> float:
+        if self._start is None:
+            return 0.0
+        return time.perf_counter() - self._start
 
 
 def get_device_name() -> str:

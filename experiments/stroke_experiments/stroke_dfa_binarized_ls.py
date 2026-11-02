@@ -16,9 +16,11 @@ import torch
 
 from models.ls_heads import fit_ridge_regression
 from utils.stroke_binary_features import standardize_hidden_features
-from utils.stroke_representation import load_stroke_head_representation
+from utils.stroke_representation import load_stroke_head_representation, build_in_memory_representation
 from utils.stroke_data import DATA_DIR
 from utils.stroke_metrics import find_best_threshold, calculate_metrics
+from experiments.stroke_experiments.stroke_bnn_dfa import train_dfa
+from experiments.stroke_experiments.stroke_results_utils import append_result, Timer
 
 
 def _numpy(value, dtype=np.float64):
@@ -58,65 +60,48 @@ def fit_binarized_ridge_ls(H_train, y_train, lambda_relative=1e-4):
     z_centered = z - z_mean
     y_centered = y - y_mean
     denominator = float(z_centered @ z_centered)
-    scale_raw = (
-        float(z_centered @ y_centered) / denominator
-        if denominator > 1e-12 else 0.0
-    )
-
-    # Ensure a non-negative scale while preserving the fitted train scores.
-    if scale_raw < 0:
-        binary_weights *= -1.0
-        scale = -scale_raw
+    if denominator <= 1e-12:
+        scale = 1.0
+        bias = y_mean
     else:
-        scale = scale_raw
-    bias = y_mean - scale_raw * z_mean
-    return binary_weights, float(scale), float(bias), weights
+        scale = float((z_centered @ y_centered) / denominator)
+        bias = float(y_mean - scale * z_mean)
+    return binary_weights, scale, bias, weights
 
 
 def train_binarized_ls(representation_path, ls_solver="ridge", lambda_relative=1e-4):
-    """Evaluate one selected binarized LS variant on a saved representation."""
+    data = load_stroke_head_representation(representation_path)
     if ls_solver not in {"ridge", "legacy"}:
         raise ValueError("ls_solver must be 'ridge' or 'legacy'")
-    if not np.isfinite(lambda_relative) or lambda_relative < 0:
-        raise ValueError("lambda_relative must be finite and >= 0")
 
-    data = load_stroke_head_representation(representation_path)
     if ls_solver == "ridge":
-        H_train_t, H_val_t, H_test_t, transform = standardize_hidden_features(
+        H_train, H_val, H_test, transform = standardize_hidden_features(
             data["H_train"], data["H_val"], data["H_test"]
         )
-        H_train = _numpy(H_train_t)
-        H_val = _numpy(H_val_t)
-        H_test = _numpy(H_test_t)
-    else:
-        # Preserve the original raw-representation behavior for reproducibility.
-        H_train = _numpy(data["H_train"])
-        H_val = _numpy(data["H_val"])
-        H_test = _numpy(data["H_test"])
-        transform = {"transform": "none_legacy_raw_hidden", "constant_units": ""}
-
-    y_train = _numpy(data["y_train"]).reshape(-1)
-    y_val = _numpy(data["y_val"]).reshape(-1)
-    y_test = _numpy(data["y_test"]).reshape(-1)
-
-    if ls_solver == "ridge":
         binary_weights, scale, bias, real_weights = fit_binarized_ridge_ls(
-            H_train, y_train, lambda_relative=lambda_relative
+            H_train,
+            data["y_train"],
+            lambda_relative=lambda_relative,
         )
         method_name = "Binarized Ridge LS (refit scale+bias)"
-        val_scores = (H_val @ binary_weights) * scale + bias
-        test_scores = (H_test @ binary_weights) * scale + bias
+        val_scores = (H_val.numpy() @ binary_weights) * scale + bias
+        test_scores = (H_test.numpy() @ binary_weights) * scale + bias
         metadata = {
             "ls_solver": "float64_augmented_svd_ridge",
             "lambda_relative": float(lambda_relative),
             "scale": float(scale),
-            "bias_treatment": "refitted using training rows after sign binarization",
+            "bias_treatment": "training-only refitted scalar scale and intercept",
             "hidden_feature_transform": transform["transform"],
             "standardized_constant_units": transform["constant_units"],
         }
     else:
+        # Legacy path: preserve historical unregularized NumPy LS behavior
+        H_train = data["H_train"]
+        H_val = data["H_val"].numpy()
+        H_test = data["H_test"].numpy()
+        transform = {"transform": "raw_unscaled_hidden", "constant_units": []}
         binary_weights, scale, bias, real_weights = fit_legacy_binarized_ls(
-            H_train, y_train
+            H_train, data["y_train"]
         )
         method_name = "Binarized LS (legacy)"
         val_scores = H_val @ binary_weights + bias
@@ -130,8 +115,9 @@ def train_binarized_ls(representation_path, ls_solver="ridge", lambda_relative=1
             "standardized_constant_units": transform["constant_units"],
         }
 
-    threshold, val_ba = find_best_threshold(y_val, val_scores)
-    metrics = calculate_metrics(y_test, test_scores, threshold)
+    threshold, val_ba = find_best_threshold(data["y_val"].numpy() if hasattr(data["y_val"], "numpy") else np.asarray(data["y_val"]), val_scores)
+    y_test_np = data["y_test"].numpy() if hasattr(data["y_test"], "numpy") else np.asarray(data["y_test"])
+    metrics = calculate_metrics(y_test_np, test_scores, threshold)
 
     return {
         "method": method_name,
@@ -153,18 +139,31 @@ def main():
     parser.add_argument(
         "--representation",
         type=Path,
-        default=DATA_DIR / "stroke_dfa_representation_seed_42.pt",
+        default=None,
+        help="Optional path to existing representation. If not supplied, backbone is trained fresh in memory."
     )
-    parser.add_argument("--ls-solver", choices=("ridge", "legacy"), default="ridge",
-                        help="ridge: stable Ridge-LS weights with refitted scale/bias; legacy: existing NumPy LS head")
+    parser.add_argument("--seed", type=int, default=42, help="Seed for backbone training")
     parser.add_argument("--lambda-relative", type=float, default=1e-4)
     args = parser.parse_args()
 
-    result = train_binarized_ls(
-        args.representation,
-        ls_solver=args.ls_solver,
-        lambda_relative=args.lambda_relative,
-    )
+    backbone_time = 0.0
+    backbone_params = 1408
+    if args.representation is not None and args.representation.exists():
+        rep_source = args.representation
+    else:
+        print(f"Training fresh BNN-DFA backbone in memory with seed {args.seed}...")
+        with Timer() as b_timer:
+            dfa_result = train_dfa(args.seed, overwrite=True, output_dir=None)
+        backbone_time = b_timer.seconds
+        backbone_params = sum(p.numel() for p in dfa_result["model"].parameters())
+        rep_source = build_in_memory_representation(dfa_result, feature_names=dfa_result["feature_names"])
+
+    with Timer() as head_timer:
+        result = train_binarized_ls(
+            rep_source,
+            ls_solver="ridge",
+            lambda_relative=args.lambda_relative,
+        )
 
     print(f"\n{result['method']}")
     print(f"LS solver: {result['ls_solver']}")
@@ -176,6 +175,31 @@ def main():
     print(f"ROC-AUC: {result['roc_auc'] * 100:.4f}%")
     print(f"PR-AUC: {result['pr_auc'] * 100:.4f}%")
     print(f"Threshold: {result['threshold']:.6f}")
+
+    total_time = backbone_time + head_timer.seconds
+    head_params = 66  # 64 binary weights + scale + bias
+    append_result(
+        experiment="stroke_dfa_binarized_ls",
+        method="BNN + DFA + Binarized Ridge LS Head (refit scale+bias)",
+        seed=result["seed"],
+        balanced_accuracy=result["balanced_accuracy"],
+        f1_score=result["f1"],
+        precision=result["precision"],
+        recall=result["recall"],
+        roc_auc=result["roc_auc"],
+        pr_auc=result["pr_auc"],
+        validation_balanced_accuracy=result["validation_balanced_accuracy"],
+        threshold=result["threshold"],
+        training_time_sec=backbone_time,
+        backbone_training_time_sec=backbone_time,
+        head_fit_time_sec=head_timer.seconds,
+        current_run_total_time_sec=total_time,
+        end_to_end_training_time_sec=total_time,
+        parameter_count=backbone_params,
+        backbone_parameter_count=backbone_params,
+        head_parameter_count=head_params,
+        total_parameter_count=backbone_params + head_params,
+    )
 
 
 if __name__ == "__main__":

@@ -1,11 +1,7 @@
-"""Bounded validation-only grid tuning for the Bank QUBO head."""
+"""Validation-based hyperparameter tuning for QUBO simulated annealing on Bank Marketing dataset."""
 from __future__ import annotations
 
 import argparse
-import csv
-from datetime import datetime
-import json
-from pathlib import Path
 import time
 from typing import Any
 
@@ -16,7 +12,7 @@ import torch.nn.functional as F
 from models.ls_heads import fit_ridge_classifier
 from models.qubo_head import calculate_ridge_ls_scales, optimize_binary_classifier
 from utils.bank.data import NUM_CLASSES
-from utils.bank.metrics import compute_classification_metrics
+from utils.bank.metrics import compute_classification_metrics, find_best_threshold
 from utils.run_provenance import collect_run_provenance, stable_run_id
 
 DEFAULT_NUM_READS = (25, 50, 100)
@@ -27,29 +23,44 @@ DEFAULT_SCALE_MULTIPLIERS = (0.5, 1.0, 2.0)
 def _parse_grid(raw: str, cast, name: str) -> tuple:
     try:
         values = tuple(cast(part.strip()) for part in raw.split(","))
-    except (TypeError, ValueError) as exc:
-        raise argparse.ArgumentTypeError(f"{name} must be comma-separated valid values") from exc
-    if not values or any(value <= 0 for value in values):
-        raise argparse.ArgumentTypeError(f"{name} must contain positive values")
-    if len(set(values)) != len(values):
-        raise argparse.ArgumentTypeError(f"{name} must not contain duplicates")
-    return values
+        if not values:
+            raise ValueError
+        return values
+    except Exception as exc:
+        raise argparse.ArgumentTypeError(f"Invalid comma-separated grid for {name}: {raw!r}") from exc
 
 
-def validate_grid(num_reads_grid, num_sweeps_grid, scale_multipliers):
-    reads = tuple(num_reads_grid)
-    sweeps = tuple(num_sweeps_grid)
-    multipliers = tuple(scale_multipliers)
-    return tuple((int(n), int(s), float(m)) for n in reads for s in sweeps for m in multipliers)
+def validate_grid(
+    num_reads_grid: tuple[int, ...],
+    num_sweeps_grid: tuple[int, ...],
+    scale_multipliers: tuple[float, ...],
+) -> list[tuple[int, int, float]]:
+    configurations = []
+    for reads in num_reads_grid:
+        if reads <= 0:
+            raise ValueError(f"num_reads must be positive, got {reads}")
+        for sweeps in num_sweeps_grid:
+            if sweeps <= 0:
+                raise ValueError(f"num_sweeps must be positive, got {sweeps}")
+            for mult in scale_multipliers:
+                if mult <= 0.0:
+                    raise ValueError(f"scale_multiplier must be positive, got {mult}")
+                configurations.append((reads, sweeps, mult))
+    return configurations
 
 
-def create_binary_targets(labels: torch.Tensor, num_classes: int = NUM_CLASSES) -> torch.Tensor:
-    """Map class indices to bipolar {-1, +1} targets."""
-    return 2.0 * F.one_hot(labels.to(torch.long), num_classes=num_classes).float() - 1.0
+def create_binary_targets(y: torch.Tensor, num_classes: int = NUM_CLASSES) -> torch.Tensor:
+    """One-hot targets mapped from {0, 1} to {-1, +1} for Ising formulation."""
+    one_hot = F.one_hot(y.long(), num_classes=num_classes).float()
+    return 2.0 * one_hot - 1.0
 
 
-def calculate_final_scale_and_bias(H: torch.Tensor, target: torch.Tensor, binary_weight: torch.Tensor):
-    """Refit continuous scale and intercept for binary weights on training data."""
+def calculate_final_scale_and_bias(
+    H: torch.Tensor,
+    target: torch.Tensor,
+    binary_weight: torch.Tensor,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """Refit continuous positive scale and unconstrained bias on training representations."""
     H = H.float()
     target = target.float()
     binary_weight = binary_weight.float()
@@ -83,7 +94,7 @@ def evaluate_binary_head(H: torch.Tensor, weights: torch.Tensor, scales: torch.T
 
 
 def select_configuration(rows: list[dict[str, Any]]) -> dict[str, Any]:
-    """Select best configuration by validation balanced accuracy (or accuracy), then reads, sweeps."""
+    """Select best configuration by validation balanced accuracy, then reads, sweeps."""
     if not rows:
         raise ValueError("Cannot select from an empty result set")
     return max(
@@ -154,8 +165,9 @@ def tune_from_representations(
         b_tensor = torch.stack(final_biases)
 
         val_scores = evaluate_binary_head(H_val, w_tensor, sc_tensor, b_tensor)
-        val_preds = val_scores.argmax(dim=1).numpy()
         val_probs = torch.softmax(val_scores, dim=1)[:, 1].numpy()
+        best_threshold = find_best_threshold(y_val.numpy(), val_probs)
+        val_preds = (val_probs >= best_threshold).astype(int)
         val_metrics = compute_classification_metrics(y_val.numpy(), val_preds, val_probs)
 
         iter_time = time.perf_counter() - iter_start
@@ -165,22 +177,19 @@ def tune_from_representations(
             "num_sweeps": num_sweeps,
             "scale_multiplier": multiplier,
             "solver_seed": solver_seed,
+            "best_threshold": best_threshold,
             "validation_accuracy": val_metrics["accuracy"],
             "validation_balanced_accuracy": val_metrics["balanced_accuracy"],
             "validation_f1": val_metrics["f1"],
-            "validation_roc_auc": val_metrics.get("roc_auc", 0.0),
-            "validation_pr_auc": val_metrics.get("pr_auc", 0.0),
-            "runtime_sec": iter_time,
-            "config_key": config_key,
+            "candidate_time_sec": iter_time,
         }
         rows.append(row)
-        candidates_data[config_key] = (w_tensor, sc_tensor, b_tensor)
+        candidates_data[config_key] = (w_tensor, sc_tensor, b_tensor, best_threshold)
 
-    winning_row = select_configuration(rows)
-    for r in rows:
-        r["selected"] = (r["config_key"] == winning_row["config_key"])
+    win_row = select_configuration(rows)
+    win_key = f"r{win_row['num_reads']}_s{win_row['num_sweeps']}_m{win_row['scale_multiplier']:.4f}"
+    best_w, best_sc, best_b, best_thresh = candidates_data[win_key]
+    win_row["selected_threshold"] = best_thresh
 
-    best_w, best_sc, best_b = candidates_data[winning_row["config_key"]]
-    total_tuning_time = time.perf_counter() - tuning_start
-
-    return winning_row, best_w, best_sc, best_b, rows, total_tuning_time
+    total_time = time.perf_counter() - tuning_start
+    return win_row, best_w, best_sc, best_b, rows, total_time

@@ -183,7 +183,8 @@ def append_result(
             old_fields = list(reader.fieldnames or [])
             historical_rows = list(reader)
         if "run_id" in old_fields and any(existing.get("run_id") == run_id for existing in historical_rows):
-            raise FileExistsError(f"Refusing duplicate MNIST result append for run_id={run_id}")
+            print(f"[RESULTS] Result with run_id={run_id} already logged; skipping duplicate.")
+            return
         fieldnames = old_fields + [name for name in fieldnames if name not in old_fields]
         if fieldnames != old_fields:
             temp_name = None

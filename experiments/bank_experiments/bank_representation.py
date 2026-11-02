@@ -1,8 +1,10 @@
 """Create or safely reuse one fixed Bank BNN+DFA representation per seed/config."""
 from __future__ import annotations
 
+import copy
 import time
 from pathlib import Path
+import numpy as np
 import torch
 from torch.utils.data import DataLoader
 
@@ -17,6 +19,7 @@ from utils.bank.representation import (
 )
 from utils.bank.seed import set_seed
 from utils.bank.data import NUM_FEATURES, NUM_CLASSES
+from utils.bank.metrics import compute_classification_metrics, find_best_threshold
 
 
 def collect_hidden_features(model: BankBNN, loader: DataLoader, device: torch.device) -> tuple[torch.Tensor, torch.Tensor]:
@@ -34,22 +37,27 @@ def collect_hidden_features(model: BankBNN, loader: DataLoader, device: torch.de
 
 def train_bank_backbone(
     train_dataset,
-    seed: int,
+    val_dataset=None,
+    seed: int = 42,
     epochs: int = 15,
     batch_size: int = 64,
     lr: float = 0.001,
     hidden_size: int = 64,
     device: str | torch.device = "cpu",
 ) -> tuple[BankBNN, float]:
-    """Train a single BNN-DFA backbone and return (model, elapsed_seconds)."""
+    """Train a single BNN-DFA backbone with validation checkpointing and return (model, elapsed_seconds)."""
     device = torch.device(device)
     set_seed(seed)
 
     train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
+    val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False) if val_dataset is not None else None
+
     model = BankBNN(input_size=NUM_FEATURES, hidden_size=hidden_size, num_classes=NUM_CLASSES).to(device)
     dfa = BankDFA(hidden_size=hidden_size, output_size=NUM_CLASSES, device=device)
-    criterion = torch.nn.CrossEntropyLoss()
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
+
+    best_val_ba = -1.0
+    best_state = None
 
     started = time.perf_counter()
     for epoch in range(epochs):
@@ -75,13 +83,32 @@ def train_bank_backbone(
             grad_hidden_weight = hidden_error.T @ x
             grad_hidden_bias = hidden_error.sum(dim=0)
 
-            b_sz = labels.size(0)
-            model.fc1.weight.grad = grad_hidden_weight / b_sz
-            model.fc1.bias.grad = grad_hidden_bias / b_sz
-            model.fc2.weight.grad = grad_output_weight / b_sz
-            model.fc2.bias.grad = grad_output_bias / b_sz
+            model.fc1.weight.grad = grad_hidden_weight
+            model.fc1.bias.grad = grad_hidden_bias
+            model.fc2.weight.grad = grad_output_weight
+            model.fc2.bias.grad = grad_output_bias
 
             optimizer.step()
+
+        if val_loader is not None:
+            model.eval()
+            val_probs, val_y = [], []
+            with torch.no_grad():
+                for v_feat, v_lbl in val_loader:
+                    v_feat = v_feat.to(device)
+                    probs = torch.softmax(model(v_feat), dim=1)[:, 1].cpu()
+                    val_probs.extend(probs.numpy())
+                    val_y.extend(v_lbl.numpy())
+            thresh = find_best_threshold(np.array(val_y), np.array(val_probs))
+            preds = (np.array(val_probs) >= thresh).astype(int)
+            val_m = compute_classification_metrics(val_y, preds, val_probs)
+            val_ba = val_m["balanced_accuracy"]
+            if val_ba > best_val_ba:
+                best_val_ba = val_ba
+                best_state = copy.deepcopy(model.state_dict())
+
+    if best_state is not None:
+        model.load_state_dict(best_state)
 
     elapsed = time.perf_counter() - started
     return model, elapsed
@@ -117,7 +144,7 @@ def load_or_train_bank_representation(
     # Train fresh backbone
     dev = torch.device(device)
     model, backbone_time = train_bank_backbone(
-        train_dataset, seed=seed, epochs=epochs, batch_size=batch_size, lr=lr,
+        train_dataset, val_dataset=val_dataset, seed=seed, epochs=epochs, batch_size=batch_size, lr=lr,
         hidden_size=hidden_size, device=dev,
     )
 
@@ -150,4 +177,3 @@ def load_or_train_bank_representation(
 
     save_representation(path, payload, metadata)
     return payload, path, "trained", backbone_time, feat_time
-

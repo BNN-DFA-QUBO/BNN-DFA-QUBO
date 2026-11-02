@@ -5,7 +5,7 @@ import unittest
 import torch
 import torch.nn.functional as F
 
-from experiments.MNIST_experiments.compare_ls_binary_qubo_shared import (
+from models.ls_heads import (
     binary_scores,
     fit_binarized_ridge,
 )

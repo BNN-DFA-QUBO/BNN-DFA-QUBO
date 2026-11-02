@@ -23,11 +23,13 @@ from experiments.MNIST_experiments.bnn_dfa_qubo import (
     calculate_final_scale_and_bias,
     create_binary_targets,
 )
-from experiments.MNIST_experiments.compare_ls_binary_qubo_shared import (
+from models.ls_heads import (
+    accuracy_from_scores,
     binary_scores,
     fit_binarized_ridge,
+    fit_ridge_classifier,
+    predict_scores,
 )
-from models.ls_heads import accuracy_from_scores, fit_ridge_classifier, predict_scores
 from models.qubo_head import calculate_ridge_ls_scales, optimize_binary_classifier
 from utils.MNIST.data import get_mnist_loaders
 from utils.MNIST.seed import set_seed
@@ -102,63 +104,100 @@ def _append_result(rows, name, H_train, y_train, H_val, y_val, H_test, y_test,
     })
 
 
-def _persist_selected_qubo_result(*, seed, test_accuracy, winner, tuning_rows,
-                                  validation_fraction, representation,
-                                  representation_path, representation_source,
-                                  tuning_csv_path,
-                                  backbone_training_time_sec=0.0,
-                                  feature_extraction_time_sec=0.0,
-                                  head_fit_time_sec=0.0,
-                                  end_to_end_training_time_sec=None,
-                                  current_run_total_time_sec=0.0,
-                                  pipeline_timing_status="complete",
-                                  backbone_parameter_count=101770,
-                                  head_parameter_count=1300,
-                                  total_parameter_count=103070):
-    """Append exactly one selected QUBO result through the shared results writer."""
+# Backward compatibility alias for tests
+def _persist_selected_qubo_result(**kwargs):
+    seed = kwargs.pop("seed")
+    winner = kwargs.pop("winner")
+    test_accuracy = kwargs.pop("test_accuracy")
+    rows = [{
+        "head": "QUBO Binary",
+        "validation_accuracy_pct": winner.get("validation_accuracy", 0.0),
+        "test_accuracy_pct": test_accuracy,
+        "configuration": winner,
+        "head_fit_time_sec": kwargs.pop("qubo_time_sec", 0.0),
+        "head_parameter_count": kwargs.pop("head_parameter_count", 1280),
+    }]
+    return _persist_all_shared_results(seed=seed, rows=rows, winner=winner, **kwargs)
+
+
+def _persist_all_shared_results(*, seed, rows, winner, tuning_rows,
+                                validation_fraction, representation,
+                                representation_path, representation_source,
+                                tuning_csv_path,
+                                backbone_training_time_sec=0.0,
+                                feature_extraction_time_sec=0.0,
+                                cur_backbone_time=0.0,
+                                cur_extraction_time=0.0,
+                                pipeline_timing_status="complete",
+                                backbone_parameter_count=101770):
+    """Append every evaluated classifier head from the shared run to mnist_results.csv."""
     metadata = representation["metadata"]
     counts = metadata["sample_counts"]
-    append_result(
-        experiment="mnist_shared_validation",
-        method="QUBO Binary",
-        seed=seed,
-        test_accuracy=test_accuracy,
-        parameter_count=backbone_parameter_count,
-        training_time_sec=backbone_training_time_sec,
-        backbone_parameter_count=backbone_parameter_count,
-        head_parameter_count=head_parameter_count,
-        total_parameter_count=total_parameter_count,
-        backbone_training_time_sec=backbone_training_time_sec,
-        feature_extraction_time_sec=feature_extraction_time_sec,
-        head_fit_time_sec=head_fit_time_sec,
-        end_to_end_training_time_sec=end_to_end_training_time_sec,
-        current_run_total_time_sec=current_run_total_time_sec,
-        pipeline_timing_status=pipeline_timing_status,
-        qubo_time_sec=winner.get("tuning_total_seconds",
-                                  sum(row.get("runtime_sec", 0.0) for row in tuning_rows)),
-        qubo_selected_candidate_time_sec=winner.get("runtime_sec"),
-        qubo_tuning_enabled=True,
-        qubo_num_reads_selected=winner["num_reads"],
-        qubo_num_sweeps_selected=winner["num_sweeps"],
-        qubo_grid_protocol="fixed_27_configuration_v1",
-        qubo_scale_multiplier_selected=winner["scale_multiplier"],
-        qubo_validation_accuracy=winner["validation_accuracy"],
-        qubo_validation_fraction=validation_fraction,
-        qubo_grid_size=len(tuning_rows),
-        qubo_solver_seed_selected=winner["solver_seed"],
-        qubo_selection_metric="validation_accuracy_percent",
-        representation_artifact_id=representation["artifact_id"],
-        representation_path=str(representation_path.resolve()),
-        representation_cache_status=representation_source,
-        dataset_fingerprint=metadata.get("dataset_fingerprint", ""),
-        split_protocol=metadata.get("split_protocol", ""),
-        representation_sha256=representation.get("representation_sha256", ""),
-        backbone_training_json=json.dumps(metadata.get("training", {}), sort_keys=True),
-        n_train=counts["train"],
-        n_validation=counts["validation"],
-        n_test=counts["test"],
-        notes=f"tuning_csv={tuning_csv_path.resolve()}",
-    )
+
+    # Map displayed head name to standard canonical method name
+    method_name_map = {
+        "Ridge LS": "Ridge LS",
+        "Binarized Ridge LS": "Binarized Ridge LS",
+        "QUBO Binary": "QUBO Binary",
+        "STE (best validation epoch)": "STE Binary",
+    }
+
+    for row in rows:
+        head_name = row["head"]
+        method_name = method_name_map.get(head_name, head_name)
+        test_acc = float(row["test_accuracy_pct"])
+        head_fit_time = float(row.get("head_fit_time_sec", 0.0))
+        head_param_count = int(row.get("head_parameter_count", 0))
+        tot_params = backbone_parameter_count + head_param_count
+
+        if backbone_training_time_sec is not None and feature_extraction_time_sec is not None:
+            e2e_time = backbone_training_time_sec + feature_extraction_time_sec + head_fit_time
+        else:
+            e2e_time = None
+        cur_total_time = cur_backbone_time + cur_extraction_time + head_fit_time
+
+        is_qubo = (head_name == "QUBO Binary")
+        append_result(
+            experiment="mnist_shared_validation",
+            method=method_name,
+            seed=seed,
+            test_accuracy=test_acc,
+            parameter_count=backbone_parameter_count,
+            training_time_sec=backbone_training_time_sec,
+            backbone_parameter_count=backbone_parameter_count,
+            head_parameter_count=head_param_count,
+            total_parameter_count=tot_params,
+            backbone_training_time_sec=backbone_training_time_sec,
+            feature_extraction_time_sec=feature_extraction_time_sec,
+            head_fit_time_sec=head_fit_time,
+            end_to_end_training_time_sec=e2e_time,
+            current_run_total_time_sec=cur_total_time,
+            pipeline_timing_status=pipeline_timing_status,
+            qubo_time_sec=(winner.get("tuning_total_seconds", sum(r.get("runtime_sec", 0.0) for r in tuning_rows))
+                           if is_qubo and winner and tuning_rows else None),
+            qubo_selected_candidate_time_sec=(winner.get("runtime_sec") if is_qubo and winner else None),
+            qubo_tuning_enabled=is_qubo,
+            qubo_num_reads_selected=(winner["num_reads"] if is_qubo and winner else None),
+            qubo_num_sweeps_selected=(winner["num_sweeps"] if is_qubo and winner else None),
+            qubo_grid_protocol=("fixed_27_configuration_v1" if is_qubo and winner else ""),
+            qubo_scale_multiplier_selected=(winner["scale_multiplier"] if is_qubo and winner else None),
+            qubo_validation_accuracy=(winner["validation_accuracy"] if is_qubo and winner else None),
+            qubo_validation_fraction=(validation_fraction if is_qubo else None),
+            qubo_grid_size=(len(tuning_rows) if is_qubo and tuning_rows else None),
+            qubo_solver_seed_selected=(winner["solver_seed"] if is_qubo and winner else None),
+            qubo_selection_metric=("validation_accuracy_percent" if is_qubo else ""),
+            representation_artifact_id=representation["artifact_id"],
+            representation_path=str(representation_path.resolve()),
+            representation_cache_status=representation_source,
+            dataset_fingerprint=metadata.get("dataset_fingerprint", ""),
+            split_protocol=metadata.get("split_protocol", ""),
+            representation_sha256=representation.get("representation_sha256", ""),
+            backbone_training_json=json.dumps(metadata.get("training", {}), sort_keys=True),
+            n_train=counts["train"],
+            n_validation=counts["validation"],
+            n_test=counts["test"],
+            notes=f"head_config={row.get('configuration', '')}; tuning_csv={tuning_csv_path.resolve() if tuning_csv_path else ''}",
+        )
 
 
 def main():
@@ -432,13 +471,12 @@ def main():
             sample_counts["validation"], sample_counts["test"],
         )
         print(f"QUBO tuning CSV: {tuning_path.resolve()}")
-        # The shared-validation runner owns comparison artifacts; the shared
-        # results utility owns the canonical mnist_results.csv append. Persist
-        # only the selected QUBO head, using its actual post-selection test score.
-        _persist_selected_qubo_result(
+        # The shared-validation runner owns comparison artifacts and records
+        # every evaluated head (Ridge LS, Binarized Ridge LS, QUBO Binary, STE Binary)
+        # to the canonical mnist_results.csv.
+        _persist_all_shared_results(
             seed=seed,
-            test_accuracy=next(row["test_accuracy_pct"] for row in rows
-                               if row["head"] == "QUBO Binary"),
+            rows=rows,
             winner=tuning_winner,
             tuning_rows=tuning_rows,
             validation_fraction=args.validation_fraction,
@@ -448,13 +486,10 @@ def main():
             tuning_csv_path=tuning_path,
             backbone_training_time_sec=(artifact_training_time if artifact_training_time is not None else 0.0) if representation_source == "trained" else cur_backbone_time,
             feature_extraction_time_sec=(artifact_extraction_time if artifact_extraction_time is not None else 0.0) if representation_source == "trained" else cur_extraction_time,
-            head_fit_time_sec=float(qubo_row.get("head_fit_time_sec", 0.0)),
-            end_to_end_training_time_sec=float(qubo_row.get("end_to_end_training_time_sec")) if qubo_row.get("end_to_end_training_time_sec") != "" else None,
-            current_run_total_time_sec=float(qubo_row.get("current_run_total_time_sec", 0.0)),
+            cur_backbone_time=cur_backbone_time,
+            cur_extraction_time=cur_extraction_time,
             pipeline_timing_status=pipeline_timing_status,
             backbone_parameter_count=backbone_param_count,
-            head_parameter_count=int(qubo_row.get("head_parameter_count", 1300)),
-            total_parameter_count=int(qubo_row.get("total_parameter_count", 103070)),
         )
 
     print("\nHead comparison (same frozen backbone/features):")

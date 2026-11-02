@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import time
 from pathlib import Path
+import numpy as np
 import torch
 import torch.nn.functional as F
 
@@ -25,7 +26,7 @@ from experiments.bank_experiments.tune_qubo_validation import (
 from models.bank_bnn import BankBNN
 from models.qubo_head import calculate_ridge_ls_scales, optimize_binary_classifier
 from utils.bank.data import NUM_CLASSES, NUM_FEATURES, get_bank_datasets, get_bank_loaders
-from utils.bank.metrics import compute_classification_metrics
+from utils.bank.metrics import compute_classification_metrics, find_best_threshold
 from utils.bank.seed import set_seed
 
 
@@ -55,42 +56,51 @@ def run_bnn_dfa_qubo(
     train_ds, val_ds, test_ds = get_bank_datasets()
 
     with Timer() as overall_timer:
-        # Step 1: Train BNN-DFA Backbone
+        # Step 1: Train BNN-DFA Backbone with validation checkpointing
         print("Training BNN-DFA backbone...")
         model, backbone_time = train_bank_backbone(
-            train_ds, seed=seed, epochs=epochs, batch_size=batch_size, lr=lr,
-            hidden_size=hidden_size, device=device,
+            train_ds,
+            val_dataset=val_ds,
+            seed=seed,
+            epochs=epochs,
+            batch_size=batch_size,
+            lr=lr,
+            hidden_size=hidden_size,
+            device=device,
         )
 
         for param in model.parameters():
             param.requires_grad = False
 
-        # Step 2: Extract hidden features
+        # Step 2: Extract Frozen Hidden Representations
         print("Extracting frozen hidden representations...")
         feat_start = time.perf_counter()
-        tr_loader, val_loader, te_loader = get_bank_loaders(batch_size=batch_size)
+        tr_loader = torch.utils.data.DataLoader(train_ds, batch_size=batch_size, shuffle=False)
+        val_loader = torch.utils.data.DataLoader(val_ds, batch_size=batch_size, shuffle=False)
+        te_loader = torch.utils.data.DataLoader(test_ds, batch_size=batch_size, shuffle=False)
+
         H_train, y_train = collect_hidden_features(model, tr_loader, device)
         H_val, y_val = collect_hidden_features(model, val_loader, device)
         H_test, y_test = collect_hidden_features(model, te_loader, device)
         feat_time = time.perf_counter() - feat_start
 
-        # Step 3: QUBO Head Optimization
-        print("Optimizing QUBO binary classifier heads...")
+        # Step 3: QUBO Head Formulation & Optimization
         qubo_start = time.perf_counter()
-
         if tune_validation:
-            print("Performing validation grid search for QUBO hyperparameters...")
-            win_row, best_w, best_sc, best_b, _, qubo_time = tune_from_representations(
+            print("Tuning QUBO hyper-parameters on validation set...")
+            win_row, best_w, best_sc, best_b, rows, qubo_time = tune_from_representations(
                 H_train, y_train, H_val, y_val, seed=seed,
             )
+            val_acc = win_row["validation_accuracy"]
+            val_ba = win_row["validation_balanced_accuracy"]
             selected_reads = win_row["num_reads"]
             selected_sweeps = win_row["num_sweeps"]
             selected_mult = win_row["scale_multiplier"]
-            val_acc = win_row["validation_accuracy"]
-            val_ba = win_row["validation_balanced_accuracy"]
+            best_thresh = win_row.get("selected_threshold", 0.5)
         else:
-            base_scales = calculate_ridge_ls_scales(H_train, y_train, num_classes=NUM_CLASSES)
+            print(f"Running standalone fixed QUBO (reads={num_reads}, sweeps={num_sweeps})...")
             targets_train = create_binary_targets(y_train, num_classes=NUM_CLASSES)
+            base_scales = calculate_ridge_ls_scales(H_train, y_train, num_classes=NUM_CLASSES, lambda_relative=1e-4)
             w_bin = optimize_binary_classifier(
                 H=H_train,
                 targets=targets_train,
@@ -102,13 +112,13 @@ def run_bnn_dfa_qubo(
             )
 
             w_list, sc_list, b_list = [], [], []
-            for class_id in range(NUM_CLASSES):
-                w_refit, sc, b = calculate_final_scale_and_bias(
-                    H_train, targets_train[:, class_id], w_bin[:, class_id],
+            for c_id in range(NUM_CLASSES):
+                w_c, sc_c, b_c = calculate_final_scale_and_bias(
+                    H=H_train, target=targets_train[:, c_id], binary_weight=w_bin[:, c_id],
                 )
-                w_list.append(w_refit)
-                sc_list.append(sc)
-                b_list.append(b)
+                w_list.append(w_c)
+                sc_list.append(sc_c)
+                b_list.append(b_c)
 
             best_w = torch.stack(w_list, dim=1)
             best_sc = torch.stack(sc_list)
@@ -116,8 +126,9 @@ def run_bnn_dfa_qubo(
             qubo_time = time.perf_counter() - qubo_start
 
             val_scores = evaluate_binary_head(H_val, best_w, best_sc, best_b)
-            val_preds = val_scores.argmax(dim=1).numpy()
             val_probs = torch.softmax(val_scores, dim=1)[:, 1].numpy()
+            best_thresh = find_best_threshold(y_val.numpy(), val_probs)
+            val_preds = (val_probs >= best_thresh).astype(int)
             val_metrics = compute_classification_metrics(y_val.numpy(), val_preds, val_probs)
             val_acc = val_metrics["accuracy"]
             val_ba = val_metrics["balanced_accuracy"]
@@ -125,14 +136,14 @@ def run_bnn_dfa_qubo(
             selected_sweeps = num_sweeps
             selected_mult = 1.0
 
-        # Step 4: Final Test Evaluation
+        # Step 4: Final Test Evaluation with validation-selected threshold
         test_scores = evaluate_binary_head(H_test, best_w, best_sc, best_b)
-        test_preds = test_scores.argmax(dim=1).numpy()
         test_probs = torch.softmax(test_scores, dim=1)[:, 1].numpy()
+        test_preds = (test_probs >= best_thresh).astype(int)
         test_metrics = compute_classification_metrics(y_test.numpy(), test_preds, test_probs)
 
     print(
-        f"\nFinal Test Results (BNN + DFA + QUBO): "
+        f"\nFinal Test Results (BNN + DFA + QUBO, Threshold {best_thresh:.4f}): "
         f"Acc: {test_metrics['accuracy']:.2f}% | BA: {test_metrics['balanced_accuracy']:.2f}% | "
         f"F1: {test_metrics['f1']:.2f}% | ROC-AUC: {test_metrics.get('roc_auc', 0):.2f}% | PR-AUC: {test_metrics.get('pr_auc', 0):.2f}%"
     )
@@ -152,22 +163,25 @@ def run_bnn_dfa_qubo(
         recall=test_metrics["recall"],
         roc_auc=test_metrics.get("roc_auc"),
         pr_auc=test_metrics.get("pr_auc"),
-        training_time_sec=overall_timer.seconds,
+        training_time_sec=overall_timer.elapsed,
         qubo_time_sec=qubo_time,
         backbone_training_time_sec=backbone_time,
         feature_extraction_time_sec=feat_time,
         head_fit_time_sec=qubo_time,
-        end_to_end_training_time_sec=overall_timer.seconds,
-        current_run_total_time_sec=overall_timer.seconds,
+        end_to_end_training_time_sec=overall_timer.elapsed,
+        current_run_total_time_sec=overall_timer.elapsed,
+        pipeline_timing_status="complete",
         backbone_parameter_count=backbone_params,
         head_parameter_count=head_params,
         total_parameter_count=total_params,
+        notes=f"reads={selected_reads}, sweeps={selected_sweeps}, mult={selected_mult}",
         qubo_tuning_enabled=tune_validation,
         qubo_num_reads_selected=selected_reads,
         qubo_num_sweeps_selected=selected_sweeps,
         qubo_scale_multiplier_selected=selected_mult,
         qubo_validation_accuracy=val_acc,
         qubo_validation_balanced_accuracy=val_ba,
+        qubo_selection_metric="validation_balanced_accuracy",
     )
     return test_metrics
 

@@ -20,10 +20,12 @@ import torch
 import neal
 
 from models.ls_heads import fit_ridge_regression
-from utils.stroke_representation import load_stroke_head_representation
+from utils.stroke_representation import load_stroke_head_representation, build_in_memory_representation
 from utils.stroke_binary_features import standardize_hidden_features
 from utils.stroke_metrics import find_best_threshold, calculate_metrics
 from utils.seed import set_seed
+from experiments.stroke_experiments.stroke_bnn_dfa import train_dfa
+from experiments.stroke_experiments.stroke_results_utils import append_result, Timer
 from utils.stroke_config import (
     QUBO_NUM_READS,
     QUBO_NUM_SWEEPS,
@@ -489,10 +491,25 @@ if __name__ == "__main__":
     from utils.stroke_data import DATA_DIR
 
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--representation", type=Path, default=DATA_DIR / "stroke_dfa_representation_seed_42.pt")
-    parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--representation", type=Path, default=None,
+                        help="Optional path to existing representation. If not supplied, backbone is trained fresh in memory.")
+    parser.add_argument("--seed", type=int, default=42, help="Seed for training")
     args = parser.parse_args()
-    result = train_qubo(args.representation, args.seed)
+
+    backbone_time = 0.0
+    backbone_params = 1408
+    if args.representation is not None and args.representation.exists():
+        rep_source = args.representation
+    else:
+        print(f"Training fresh BNN-DFA backbone in memory with seed {args.seed}...")
+        with Timer() as b_timer:
+            dfa_result = train_dfa(args.seed, overwrite=True, output_dir=None)
+        backbone_time = b_timer.seconds
+        backbone_params = sum(p.numel() for p in dfa_result["model"].parameters())
+        rep_source = build_in_memory_representation(dfa_result, feature_names=dfa_result["feature_names"])
+
+    with Timer() as head_timer:
+        result = train_qubo(rep_source, args.seed)
     print("\nQUBO Binary")
     print(f"Validation BA: {result['validation_balanced_accuracy'] * 100:.4f}%")
     print(f"Test BA: {result['balanced_accuracy'] * 100:.4f}%")
@@ -502,3 +519,33 @@ if __name__ == "__main__":
     print(f"Base alpha: {result['base_alpha']:.6f}")
     print(f"Selected alpha: {result['alpha']:.6f} (multiplier {result['alpha_multiplier']})")
     print(f"Candidates: {result['qubo_candidate_count']}")
+
+    total_time = backbone_time + head_timer.seconds
+    head_params = 65  # 64 binary weights + 1 scale/bias
+    append_result(
+        experiment="stroke_dfa_qubo",
+        method="BNN + DFA + QUBO (Ridge LS scale initialization)",
+        seed=result["seed"],
+        balanced_accuracy=result["balanced_accuracy"],
+        f1_score=result["f1"],
+        precision=result["precision"],
+        recall=result["recall"],
+        roc_auc=result["roc_auc"],
+        pr_auc=result["pr_auc"],
+        validation_balanced_accuracy=result["validation_balanced_accuracy"],
+        threshold=result["threshold"],
+        training_time_sec=backbone_time,
+        backbone_training_time_sec=backbone_time,
+        head_fit_time_sec=head_timer.seconds,
+        qubo_time_sec=result.get("qubo_search_seconds", head_timer.seconds),
+        current_run_total_time_sec=total_time,
+        end_to_end_training_time_sec=total_time,
+        parameter_count=backbone_params,
+        backbone_parameter_count=backbone_params,
+        head_parameter_count=head_params,
+        total_parameter_count=backbone_params + head_params,
+        qubo_tuning_enabled=False,
+        qubo_num_reads_selected=result.get("qubo_num_reads"),
+        qubo_num_sweeps_selected=result.get("qubo_num_sweeps"),
+        qubo_scale_multiplier_selected=result.get("alpha_multiplier"),
+    )

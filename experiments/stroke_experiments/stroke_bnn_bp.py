@@ -23,6 +23,7 @@ from utils.stroke_config import (
 )
 from utils.stroke_metrics import find_best_threshold, calculate_metrics
 from utils.stroke_data import load_stroke_metadata
+from experiments.stroke_experiments.stroke_results_utils import append_result, count_parameters, Timer
 
 
 def get_device():
@@ -58,13 +59,14 @@ def evaluate_validation(model, X_val, y_val, device):
 
 
 def train_bnn_bp(seed, split_seed=None, balance_method=None, overwrite=False, output_dir=DATA_DIR):
-    result_path = Path(output_dir) / f"stroke_bnn_bp_seed_{seed}.json"
-    if result_path.exists() and not overwrite:
+    result_path = (Path(output_dir) / f"stroke_bnn_bp_seed_{seed}.json") if output_dir else None
+    if result_path and result_path.exists() and not overwrite:
         raise FileExistsError(f"Refusing to replace existing result {result_path}; pass overwrite=True")
     set_seed(seed)
 
     device = get_device()
 
+    prep_dir = output_dir if output_dir else DATA_DIR
     (
         X_train,
         X_val,
@@ -73,7 +75,7 @@ def train_bnn_bp(seed, split_seed=None, balance_method=None, overwrite=False, ou
         y_val,
         y_test
     ) = prepare_stroke_data(split_seed=split_seed, balance_method=balance_method, overwrite=overwrite,
-                            output_dir=output_dir)
+                            output_dir=prep_dir)
 
     X_train_tensor = torch.tensor(
         X_train.values,
@@ -171,21 +173,22 @@ def train_bnn_bp(seed, split_seed=None, balance_method=None, overwrite=False, ou
         test_scores = torch.sigmoid(model(torch.tensor(X_test.values, dtype=torch.float32, device=device))).cpu().numpy()
     threshold, validation_ba = find_best_threshold(y_val.values, val_scores)
     test_metrics = calculate_metrics(y_test.values, test_scores, threshold)
-    metadata = load_stroke_metadata(Path(output_dir) / "metadata.json")
-    result_path.parent.mkdir(parents=True, exist_ok=True)
-    with open(result_path, "w", encoding="utf-8") as f:
-        json.dump({"model": "BNN backpropagation", "training_seed": seed, "split_seed": metadata["split_seed"],
-                   "preprocessing_version": metadata["preprocessing_version"], "balancing_method": metadata["balancing_method"],
-                   "dataset_sha256": metadata["dataset_sha256"], "preprocessing_config_hash": metadata["preprocessing_config_hash"],
-                   "feature_names": metadata["feature_names"],
-                   "loss": "BCEWithLogitsLoss(reduction='mean', pos_weight=None)",
-                   "model_config": {"hidden_size": HIDDEN_SIZE, "batch_size": BATCH_SIZE,
-                                    "epochs": TRAIN_EPOCHS, "learning_rate": LEARNING_RATE},
-                   "validation_balanced_accuracy": validation_ba,
-                   "split_class_counts": {"train_original": metadata["original_train_class_counts"],
-                                          "train_resampled": metadata["resampled_train_class_counts"],
-                                          "validation": metadata["validation_class_counts"],
-                                          "test": metadata["test_class_counts"]}, **test_metrics}, f, indent=2)
+    if result_path:
+        metadata = load_stroke_metadata(Path(output_dir) / "metadata.json")
+        result_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(result_path, "w", encoding="utf-8") as f:
+            json.dump({"model": "BNN backpropagation", "training_seed": seed, "split_seed": metadata["split_seed"],
+                       "preprocessing_version": metadata["preprocessing_version"], "balancing_method": metadata["balancing_method"],
+                       "dataset_sha256": metadata["dataset_sha256"], "preprocessing_config_hash": metadata["preprocessing_config_hash"],
+                       "feature_names": metadata["feature_names"],
+                       "loss": "BCEWithLogitsLoss(reduction='mean', pos_weight=None)",
+                       "model_config": {"hidden_size": HIDDEN_SIZE, "batch_size": BATCH_SIZE,
+                                        "epochs": TRAIN_EPOCHS, "learning_rate": LEARNING_RATE},
+                       "validation_balanced_accuracy": validation_ba,
+                       "split_class_counts": {"train_original": metadata["original_train_class_counts"],
+                                              "train_resampled": metadata["resampled_train_class_counts"],
+                                              "validation": metadata["validation_class_counts"],
+                                              "test": metadata["test_class_counts"]}, **test_metrics}, f, indent=2)
 
     with torch.no_grad():
         H_train = torch.relu(
@@ -228,7 +231,7 @@ def train_bnn_bp(seed, split_seed=None, balance_method=None, overwrite=False, ou
         "y_test": y_test,
         "test_metrics": test_metrics,
         "validation_balanced_accuracy": validation_ba,
-        "metrics_path": str(result_path)
+        "metrics_path": str(result_path) if result_path else None
     }
 
 
@@ -239,9 +242,13 @@ if __name__ == "__main__":
     parser.add_argument("--balancing", choices=("random_oversample", "none"), default=None)
     parser.add_argument("--overwrite", action="store_true")
     parser.add_argument("--output-dir", default=str(DATA_DIR))
+    parser.add_argument("--save-metrics", action="store_true", help="Save metrics json to output-dir")
     args = parser.parse_args()
-    result = train_bnn_bp(seed=args.seed, split_seed=args.split_seed,
-                          balance_method=args.balancing, overwrite=args.overwrite, output_dir=args.output_dir)
+    output_dir = args.output_dir if args.save_metrics else None
+
+    with Timer() as timer:
+        result = train_bnn_bp(seed=args.seed, split_seed=args.split_seed,
+                              balance_method=args.balancing, overwrite=(args.overwrite or not args.save_metrics), output_dir=output_dir)
 
     print(f"Device: {result['device']}")
     print(
@@ -261,3 +268,26 @@ if __name__ == "__main__":
         f"H_test shape: {result['H_test'].shape}"
     )
     print(f"Test metrics: {result['test_metrics']}")
+
+    m = result["test_metrics"]
+    append_result(
+        experiment="stroke_bnn_bp",
+        method="BNN + Backpropagation",
+        seed=args.seed,
+        balanced_accuracy=m["balanced_accuracy"],
+        f1_score=m["f1"],
+        precision=m["precision"],
+        recall=m["recall"],
+        roc_auc=m["roc_auc"],
+        pr_auc=m["pr_auc"],
+        validation_balanced_accuracy=result["validation_balanced_accuracy"],
+        threshold=m["threshold"],
+        training_time_sec=timer.seconds,
+        parameter_count=count_parameters(result["model"]),
+        backbone_training_time_sec=timer.seconds,
+        current_run_total_time_sec=timer.seconds,
+        end_to_end_training_time_sec=timer.seconds,
+        backbone_parameter_count=count_parameters(result["model"]),
+        head_parameter_count=0,
+        total_parameter_count=count_parameters(result["model"]),
+    )

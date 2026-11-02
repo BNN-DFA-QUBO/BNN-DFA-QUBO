@@ -66,7 +66,7 @@ class StrokeRepresentationCompatibilityTests(unittest.TestCase):
             "learning_rate": 0.001,
             "loss": "BCEWithLogitsLoss(reduction='mean', pos_weight=None)",
         }
-        with tempfile.TemporaryDirectory(dir=Path(__file__).resolve().parents[2] / "data") as temp:
+        with tempfile.TemporaryDirectory() as temp:
             path, metadata, saved = make_artifact(Path(temp))
             loaded = load_representation(
                 path, expected_metadata=metadata, expected_seed=42,
@@ -77,7 +77,7 @@ class StrokeRepresentationCompatibilityTests(unittest.TestCase):
 
     def test_incompatible_seed_hidden_size_training_or_split_are_rejected(self):
         expected_config = {"epochs": 50}
-        with tempfile.TemporaryDirectory(dir=Path(__file__).resolve().parents[2] / "data") as temp:
+        with tempfile.TemporaryDirectory() as temp:
             path, metadata, _ = make_artifact(Path(temp))
             cases = (
                 ({"expected_seed": 99}, "training seed"),
@@ -93,7 +93,7 @@ class StrokeRepresentationCompatibilityTests(unittest.TestCase):
                                     expected_training_config=expected_config)
 
     def test_missing_optional_config_warns_but_legacy_remains_explicitly_unverified(self):
-        with tempfile.TemporaryDirectory(dir=Path(__file__).resolve().parents[2] / "data") as temp:
+        with tempfile.TemporaryDirectory() as temp:
             path, metadata, _ = make_artifact(Path(temp), include_training_config=False)
             with warnings.catch_warnings(record=True) as caught:
                 warnings.simplefilter("always")
@@ -119,7 +119,7 @@ class StrokeRepresentationCompatibilityTests(unittest.TestCase):
             self.assertTrue(any("legacy Stroke representation" in str(w.message) for w in caught))
 
     def test_standalone_head_loader_enforces_known_hidden_size_without_using_head_seed(self):
-        with tempfile.TemporaryDirectory(dir=Path(__file__).resolve().parents[2] / "data") as temp:
+        with tempfile.TemporaryDirectory() as temp:
             path, _, _ = make_artifact(Path(temp))
             with mock.patch("utils.stroke_representation.METADATA_PATH", Path(temp) / "missing-metadata.json"), \
                  mock.patch("utils.stroke_representation.RAW_PATH", Path(temp) / "missing-source.csv"), \

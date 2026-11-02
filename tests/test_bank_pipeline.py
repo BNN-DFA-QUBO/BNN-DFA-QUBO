@@ -15,8 +15,7 @@ from utils.bank.representation import (
     load_representation,
     validate_representation,
 )
-from models.ls_heads import fit_ridge_classifier, predict_scores
-from experiments.bank_experiments.compare_ls_binary_qubo_shared import fit_binarized_ridge
+from models.ls_heads import fit_ridge_classifier, predict_scores, fit_binarized_ridge
 from experiments.bank_experiments.tune_qubo_validation import (
     create_binary_targets,
     calculate_final_scale_and_bias,

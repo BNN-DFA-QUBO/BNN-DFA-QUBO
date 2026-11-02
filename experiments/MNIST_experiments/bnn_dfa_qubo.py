@@ -418,8 +418,6 @@ if __name__ == "__main__":
 
     parser = argparse.ArgumentParser(description="MNIST BNN+DFA QUBO head")
     parser.add_argument("--seed", type=int, default=42)
-    parser.add_argument("--qubo-scale-solver", choices=("ridge", "legacy"), default="ridge",
-                        help="LS solver used only to initialize QUBO alpha scales")
     parser.add_argument("--qubo-tuning", action="store_true",
                         help="select QUBO reads and scale multiplier using a stratified training-only validation split")
     parser.add_argument("--num-reads", type=int, default=100,
@@ -445,10 +443,8 @@ if __name__ == "__main__":
             validate_grid(args.num_reads_grid, args.num_sweeps_grid, args.scale_multipliers)
         except ValueError as exc:
             parser.error(str(exc))
-        if args.qubo_scale_solver != "ridge":
-            parser.error("--qubo-tuning requires the Ridge scale initializer")
     seed = args.seed
-    scale_solver = args.qubo_scale_solver
+    scale_solver = "ridge"
     set_seed(seed)
 
     print(f"Using seed: {seed}")

@@ -152,3 +152,49 @@ def fit_selected_ridge_on_all_training(
     return fit_ridge_classifier(
         H_train, y_train, num_classes, selection.selected_lambda
     )
+
+
+def fit_binarized_ridge(
+    H_train: torch.Tensor,
+    y_train: torch.Tensor,
+    ridge_weights: torch.Tensor,
+    num_classes: int = 10,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """Bipolarize Ridge features (zero maps to +1) and refit scale and bias on training rows."""
+    classifier = ridge_weights.detach().to(device="cpu", dtype=torch.float32)
+    feature_weights = classifier[:-1, :]
+    binary_weights = torch.where(feature_weights >= 0, 1.0, -1.0)
+    targets = F.one_hot(y_train.to(torch.long), num_classes=num_classes).float()
+    scales, biases = [], []
+
+    for class_id in range(num_classes):
+        z = H_train.float() @ binary_weights[:, class_id]
+        target = targets[:, class_id]
+        z_mean, target_mean = z.mean(), target.mean()
+        z_centered, target_centered = z - z_mean, target - target_mean
+        denominator = z_centered @ z_centered
+        if denominator.item() > 1e-12:
+            scale_raw = (z_centered @ target_centered) / denominator
+        else:
+            scale_raw = torch.tensor(1.0, dtype=z.dtype)
+
+        if scale_raw.item() < 0:
+            binary_weights[:, class_id] *= -1
+            scale = -scale_raw
+        else:
+            scale = scale_raw
+        scales.append(scale)
+        biases.append(target_mean - scale_raw * z_mean)
+
+    return binary_weights, torch.stack(scales), torch.stack(biases)
+
+
+def binary_scores(
+    H: torch.Tensor,
+    weights: torch.Tensor,
+    scales: torch.Tensor,
+    biases: torch.Tensor,
+) -> torch.Tensor:
+    """Compute classification scores for binarized head with per-class scale and bias."""
+    return H.float() @ (weights * scales.unsqueeze(0)) + biases.unsqueeze(0)
+

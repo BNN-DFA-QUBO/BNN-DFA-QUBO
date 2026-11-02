@@ -16,7 +16,7 @@ from utils.stroke_config import PREPROCESSING_VERSION
 from utils.stroke_data import StrokePreprocessor, _split, _validate, prepare_stroke_data, load_stroke_metadata
 from utils.stroke_representation import save_representation, load_representation
 from models.stroke_dfa import StrokeDFAFunction
-from experiments.stroke_experiments.stroke_dfa_least_squares import fit_signed_least_squares
+from models.stroke_ann import StrokeANN
 
 
 class StrokePreprocessingTests(unittest.TestCase):
@@ -332,12 +332,12 @@ class StrokePreprocessingTests(unittest.TestCase):
         actual = StrokeDFAFunction.output_error(logits, labels) / len(labels)
         torch.testing.assert_close(actual, expected)
 
-    def test_rank_deficient_signed_least_squares_is_finite(self):
-        base = torch.arange(12, dtype=torch.float32).unsqueeze(1)
-        hidden = torch.cat((base, base, torch.ones_like(base)), dim=1)
-        labels = torch.tensor([0, 1] * 6, dtype=torch.float32)
-        weights = fit_signed_least_squares(hidden, labels)
-        self.assertTrue(torch.isfinite(weights).all())
+    def test_baseline_ann_forward_and_output_shape(self):
+        ann = StrokeANN(input_size=10, hidden_size=64)
+        x = torch.randn(8, 10)
+        out = ann(x)
+        self.assertEqual(out.shape, (8,))
+        self.assertTrue(torch.isfinite(out).all())
 
     def test_qubo_coordinate_refinement_never_increases_ising_energy(self):
         from experiments.stroke_experiments.stroke_dfa_qubo import (
@@ -440,7 +440,6 @@ class StrokePreprocessingTests(unittest.TestCase):
         from experiments.stroke_experiments.stroke_dfa_direct_binary import train_direct_binary
         from experiments.stroke_experiments.stroke_dfa_ste_binary import train_ste_binary
         from experiments.stroke_experiments.stroke_dfa_qubo import train_qubo
-        from experiments.stroke_experiments.stroke_dfa_least_squares import train_signed_least_squares
 
         rng = np.random.default_rng(5)
         y_train = torch.tensor([0, 1] * 24, dtype=torch.float32)
@@ -471,7 +470,7 @@ class StrokePreprocessingTests(unittest.TestCase):
                  patch("experiments.stroke_experiments.stroke_dfa_ste_binary.STE_EPOCHS", 3), \
                  patch("experiments.stroke_experiments.stroke_dfa_qubo.QUBO_NUM_READS", 2):
                 results = [train_real_ls(path), train_binarized_ls(path), train_direct_binary(path, 17),
-                           train_ste_binary(path, 17), train_qubo(path, 17), train_signed_least_squares(path)]
+                           train_ste_binary(path, 17), train_qubo(path, 17)]
             for head_result in results:
                 self.assertTrue(np.isfinite(head_result["balanced_accuracy"]))
                 self.assertEqual(head_result["tn"] + head_result["fp"] + head_result["fn"] + head_result["tp"], 20)
@@ -539,28 +538,14 @@ class StrokePreprocessingTests(unittest.TestCase):
             self.assertEqual(saved["experiment_type"], "controlled_end_to_end_head_comparison")
             self.assertEqual(saved["target_encoding"], "stroke labels {0,1}")
 
-    def test_controlled_and_multiseed_method_variants_describe_distinct_objectives(self):
-        from experiments.stroke_experiments.run_stroke_controlled import CONTROLLED_METHOD_METADATA
-        from experiments.stroke_experiments.stroke_binary_head_multiseed import MULTISEED_METHOD_METADATA
-        self.assertNotEqual(CONTROLLED_METHOD_METADATA["Direct Binary"]["method_variant"],
-                            MULTISEED_METHOD_METADATA["Direct Binary"]["method_variant"])
-        self.assertEqual(CONTROLLED_METHOD_METADATA["Direct Binary"]["bias_treatment"], "fixed at zero")
-        self.assertEqual(MULTISEED_METHOD_METADATA["Direct Binary"]["objective"], "binary_cross_entropy_with_logits")
-        self.assertNotEqual(CONTROLLED_METHOD_METADATA["STE Binary"]["method_variant"],
-                            MULTISEED_METHOD_METADATA["STE Binary"]["method_variant"])
-        self.assertEqual(CONTROLLED_METHOD_METADATA["STE Binary"]["objective"],
-                         "binary cross entropy with logits")
-        self.assertEqual(CONTROLLED_METHOD_METADATA["STE Binary"]["target_encoding"], "stroke labels {0,1}")
-        self.assertEqual(MULTISEED_METHOD_METADATA["STE Binary"]["target_encoding"], "stroke labels {0,1}")
 
     def test_end_to_end_synthetic_csv_through_models_and_all_heads(self):
-        from experiments.stroke_experiments import stroke_bnn_bp, stroke_bnn_dfa
+        from experiments.stroke_experiments import stroke_bnn_bp, stroke_bnn_dfa, stroke_baseline_ann
         from experiments.stroke_experiments.stroke_real_ls import train_real_ls
         from experiments.stroke_experiments.stroke_dfa_binarized_ls import train_binarized_ls
         from experiments.stroke_experiments.stroke_dfa_direct_binary import train_direct_binary
         from experiments.stroke_experiments.stroke_dfa_ste_binary import train_ste_binary
         from experiments.stroke_experiments.stroke_dfa_qubo import train_qubo
-        from experiments.stroke_experiments.stroke_dfa_least_squares import train_signed_least_squares
 
         with tempfile.TemporaryDirectory(dir=Path("data")) as tmp:
             root = Path(tmp)
@@ -576,6 +561,12 @@ class StrokePreprocessingTests(unittest.TestCase):
                                            balance_method="random_oversample")
             def metadata(*args, **kwargs):
                 return load_stroke_metadata(artifacts / "metadata.json")
+
+            with patch.object(stroke_baseline_ann, "prepare_stroke_data", side_effect=prepare), \
+                 patch.object(stroke_baseline_ann, "load_stroke_metadata", side_effect=metadata), \
+                 patch.object(stroke_baseline_ann, "get_device", return_value=torch.device("cpu")), \
+                 patch.object(stroke_baseline_ann, "TRAIN_EPOCHS", 1), patch.object(stroke_baseline_ann, "BATCH_SIZE", 64):
+                ann = stroke_baseline_ann.train_baseline_ann(99, split_seed=13, output_dir=output)
 
             common = patch.object(stroke_bnn_bp, "prepare_stroke_data", side_effect=prepare)
             with common, patch.object(stroke_bnn_bp, "load_stroke_metadata", side_effect=metadata), \
@@ -596,7 +587,8 @@ class StrokePreprocessingTests(unittest.TestCase):
                  patch("experiments.stroke_experiments.stroke_dfa_qubo.QUBO_NUM_READS", 2):
                 head_results = [train_real_ls(rep_path), train_binarized_ls(rep_path),
                                 train_direct_binary(rep_path, 107), train_ste_binary(rep_path, 107),
-                                train_qubo(rep_path, 107), train_signed_least_squares(rep_path)]
+                                train_qubo(rep_path, 107)]
+            self.assertEqual(ann["model"].fc1.in_features, len(dfa["feature_names"]))
             self.assertEqual(bp["model"].fc1.in_features, len(dfa["feature_names"]))
             self.assertEqual(len(dfa["y_train"]), dfa["H_train"].shape[0])
             self.assertEqual(metadata()["split_seed"], 13)

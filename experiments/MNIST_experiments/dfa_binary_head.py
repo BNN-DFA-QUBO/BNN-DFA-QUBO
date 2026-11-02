@@ -550,13 +550,11 @@ if __name__ == "__main__":
     # Reproducibility
     # --------------------------------------------------------
 
-    parser = argparse.ArgumentParser(description="MNIST BNN+DFA Binarized LS head")
+    parser = argparse.ArgumentParser(description="MNIST BNN+DFA Binarized Ridge LS head")
     parser.add_argument("--seed", type=int, default=42)
-    parser.add_argument("--ls-solver", choices=("ridge", "legacy"), default="ridge",
-                        help="solver used for the initial real-valued LS fit")
     args = parser.parse_args()
     seed = args.seed
-    ls_solver = args.ls_solver
+    ls_solver = "ridge"
     set_seed(seed)
 
     print(f"Using seed: {seed}")
@@ -672,14 +670,9 @@ if __name__ == "__main__":
     if device.type == "cuda":
         torch.cuda.synchronize(device)
     with Timer() as head_fit_timer:
-        if ls_solver == "ridge":
-            classifier = fit_least_squares(H_train, y_train)
-            method_name = "BNN + DFA + Binarized Ridge LS Head (refit scale+bias)"
-            prefit_name = "Ridge LS"
-        else:
-            classifier = fit_legacy_least_squares(H_train, y_train)
-            method_name = "BNN + DFA + Binarized LS Head (legacy LS initialization)"
-            prefit_name = "Legacy LS"
+        classifier = fit_least_squares(H_train, y_train)
+        method_name = "BNN + DFA + Binarized Ridge LS Head (refit scale+bias)"
+        prefit_name = "Ridge LS"
 
         # Global variables used by binary conversion
         H_global = H_train
@@ -694,7 +687,7 @@ if __name__ == "__main__":
             bias
         ) = binarize_classifier(
             classifier,
-            refit_scale_bias=(ls_solver == "ridge"),
+            refit_scale_bias=True,
         )
     if device.type == "cuda":
         torch.cuda.synchronize(device)
