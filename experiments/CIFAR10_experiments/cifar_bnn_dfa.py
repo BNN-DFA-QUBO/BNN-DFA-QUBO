@@ -30,7 +30,7 @@ def train_dfa_epoch(
     dfa: CIFARDFA,
     device: torch.device,
     clipping_strategy: str = "layer_wise",
-    max_grad_norm: float = 1.0,
+    max_grad_norm: float = 0.25,
 ) -> tuple[float, float]:
     """Train one epoch using manually calculated DFA gradients."""
 
@@ -208,7 +208,7 @@ def main():
         choices=["layer_wise", "global", "none"],
         default="layer_wise",
     )
-    parser.add_argument("--max-grad-norm", type=float, default=1.0)
+    parser.add_argument("--max-grad-norm", type=float, default=0.25)
 
     args = parser.parse_args()
 

@@ -6,10 +6,10 @@ Architecture:
       -> ReLU -> [B, 32, 16, 16]
       -> BinaryConv2d(32, 64, kernel=3, stride=2, padding=1)
       -> ReLU -> [B, 64, 8, 8]
-      -> Global Average Pooling -> [B, 64]
-      -> BinaryLinear(64, 128)
+      -> Adaptive Average Pooling (4x4) -> [B, 1024]
+      -> BinaryLinear(1024, 256)
       -> ReLU -> [B, 128]
-      -> BinaryLinear(128, 10)
+      -> BinaryLinear(256, 10)
       -> [B, 10] class logits
 """
 
@@ -61,10 +61,10 @@ class CIFAR_BNN(nn.Module):
             32, 64, kernel_size=3, stride=2, padding=1
         )
 
-        self.gap = nn.AdaptiveAvgPool2d((1, 1))
+        self.gap = nn.AdaptiveAvgPool2d((4, 4))
 
-        self.fc1 = BinaryLinear(64, 128)
-        self.fc2 = BinaryLinear(128, 10)
+        self.fc1 = BinaryLinear(1024, 256)
+        self.fc2 = BinaryLinear(256, 10)
 
     def extract_features(self, x: torch.Tensor) -> torch.Tensor:
 

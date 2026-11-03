@@ -15,7 +15,7 @@ class CIFARDFA:
         num_classes: int = 10,
         conv1_shape: tuple[int, int, int] = (32, 16, 16),
         conv2_shape: tuple[int, int, int] = (64, 8, 8),
-        dense_size: int = 128,
+        dense_size: int = 256,
         device: torch.device | str = "cpu",
         seed: int | None = None,
     ):
@@ -33,8 +33,11 @@ class CIFARDFA:
         )
 
         generator = None
+
         if seed is not None:
-            generator = torch.Generator(device="cpu").manual_seed(int(seed))
+            generator = torch.Generator(
+                device="cpu"
+            ).manual_seed(int(seed))
 
         scale = num_classes ** 0.5
 
@@ -92,32 +95,67 @@ class CIFARDFA:
         batch_size = labels.size(0)
 
         if outputs.ndim != 2 or outputs.shape[1] != self.num_classes:
-            raise ValueError("Output tensor has an incompatible shape.")
+            raise ValueError(
+                "Output tensor has an incompatible shape."
+            )
 
-        if outputs.device != self.device:
-            raise ValueError("Model outputs and DFA feedback are on different devices.")
+        # Ensure model outputs and DFA feedback use the same device.
+        if outputs.device.type != self.device.type:
+            raise ValueError(
+                f"Device mismatch: outputs={outputs.device}, "
+                f"DFA={self.device}"
+            )
+
+        self.feedback_conv1 = self.feedback_conv1.to(outputs.device)
+        self.feedback_conv2 = self.feedback_conv2.to(outputs.device)
+        self.feedback_dense = self.feedback_dense.to(outputs.device)
+
+        self.device = outputs.device
 
         if labels.device != outputs.device:
-            raise ValueError("Labels and model outputs must be on the same device.")
+            raise ValueError(
+                "Labels and model outputs must be on the same device."
+            )
 
         if not torch.isfinite(outputs).all():
-            raise ValueError("Model outputs contain non-finite values.")
+            raise ValueError(
+                "Model outputs contain non-finite values."
+            )
 
-        output_error = CIFARDFAFunction.output_error(outputs, labels)
+        # Output error.
+        output_error = CIFARDFAFunction.output_error(
+            outputs,
+            labels,
+        )
 
-        # Output layer: exact cross-entropy gradient.
+        # -----------------------------------------------------
+        # Output layer: exact cross-entropy gradient
+        # -----------------------------------------------------
+
         grad_fc2_weight = output_error.T @ dense_act
         grad_fc2_bias = output_error.sum(dim=0)
 
-        # Dense hidden layer: direct feedback.
+        # -----------------------------------------------------
+        # Dense hidden layer: direct feedback
+        # -----------------------------------------------------
+
         dense_error_signal = output_error @ self.feedback_dense
-        dense_delta = dense_error_signal * (dense_pre > 0).to(dense_pre.dtype)
+
+        dense_delta = (
+            dense_error_signal
+            * (dense_pre > 0).to(dense_pre.dtype)
+        )
 
         grad_fc1_weight = dense_delta.T @ gap_act
         grad_fc1_bias = dense_delta.sum(dim=0)
 
-        # Second convolutional layer: direct feedback.
-        conv2_error_signal_flat = output_error @ self.feedback_conv2
+        # -----------------------------------------------------
+        # Second convolutional layer: direct feedback
+        # -----------------------------------------------------
+
+        conv2_error_signal_flat = (
+            output_error @ self.feedback_conv2
+        )
 
         conv2_delta = conv2_error_signal_flat.reshape(
             batch_size,
@@ -132,10 +170,17 @@ class CIFARDFA:
             padding=model.conv2.padding,
         )
 
-        grad_conv2_bias = conv2_delta.sum(dim=(0, 2, 3))
+        grad_conv2_bias = conv2_delta.sum(
+            dim=(0, 2, 3)
+        )
 
-        # First convolutional layer: direct feedback.
-        conv1_error_signal_flat = output_error @ self.feedback_conv1
+        # -----------------------------------------------------
+        # First convolutional layer: direct feedback
+        # -----------------------------------------------------
+
+        conv1_error_signal_flat = (
+            output_error @ self.feedback_conv1
+        )
 
         conv1_delta = conv1_error_signal_flat.reshape(
             batch_size,
@@ -150,7 +195,13 @@ class CIFARDFA:
             padding=model.conv1.padding,
         )
 
-        grad_conv1_bias = conv1_delta.sum(dim=(0, 2, 3))
+        grad_conv1_bias = conv1_delta.sum(
+            dim=(0, 2, 3)
+        )
+
+        # -----------------------------------------------------
+        # Collect gradients
+        # -----------------------------------------------------
 
         gradients = {
             "conv1.weight": grad_conv1_weight,
@@ -190,7 +241,9 @@ class CIFARDFA:
         }
 
         if gradients.keys() != parameters.keys():
-            raise ValueError("DFA gradient keys do not match model parameters.")
+            raise ValueError(
+                "DFA gradient keys do not match model parameters."
+            )
 
         for name, parameter in parameters.items():
             gradient = gradients[name]
@@ -220,25 +273,44 @@ class CIFARDFAFunction:
         """Calculate the mean cross-entropy gradient with respect to logits."""
 
         if outputs.ndim != 2:
-            raise ValueError("Outputs must be a two-dimensional tensor.")
+            raise ValueError(
+                "Outputs must be a two-dimensional tensor."
+            )
 
         if labels.ndim != 1 or labels.size(0) != outputs.size(0):
-            raise ValueError("Labels must have shape [batch_size].")
+            raise ValueError(
+                "Labels must have shape [batch_size]."
+            )
 
         if labels.dtype != torch.long:
             labels = labels.long()
 
         if labels.device != outputs.device:
-            raise ValueError("Labels and outputs must share the same device.")
+            raise ValueError(
+                "Labels and outputs must share the same device."
+            )
 
         if labels.numel() and (
-            labels.min() < 0 or labels.max() >= outputs.size(1)
+            labels.min() < 0
+            or labels.max() >= outputs.size(1)
         ):
-            raise ValueError("Labels contain invalid class indices.")
+            raise ValueError(
+                "Labels contain invalid class indices."
+            )
 
-        probabilities = torch.softmax(outputs, dim=1)
+        probabilities = torch.softmax(
+            outputs,
+            dim=1,
+        )
 
         targets = torch.zeros_like(probabilities)
-        targets.scatter_(1, labels.unsqueeze(1), 1.0)
 
-        return (probabilities - targets) / labels.size(0)
+        targets.scatter_(
+            1,
+            labels.unsqueeze(1),
+            1.0,
+        )
+
+        return (
+            probabilities - targets
+        ) / labels.size(0)

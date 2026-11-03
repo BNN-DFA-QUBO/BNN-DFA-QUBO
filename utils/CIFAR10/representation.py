@@ -14,11 +14,11 @@ from sklearn.model_selection import train_test_split
 from utils.run_provenance import collect_run_provenance
 
 
-REPRESENTATION_VERSION = "cifar10-bnn-dfa-representation-v2"
+REPRESENTATION_VERSION = "cifar10-bnn-dfa-representation-v4"
 
 DEFAULT_REPRESENTATION_DIR = Path("data/cifar10_representations")
 
-REPRESENTATION_DIM = 128
+REPRESENTATION_DIM = 256
 NUM_CLASSES = 10
 
 PREPROCESSING = {
@@ -50,11 +50,11 @@ BACKBONE = {
         "activation": "relu",
     },
     "gap": {
-        "type": "AdaptiveAvgPool2d((1, 1))",
-        "out_channels": 64,
+        "type": "AdaptiveAvgPool2d((4, 4))",
+        "out_channels": 1024,
     },
     "fc1": {
-        "in_features": 64,
+        "in_features": 1024,
         "out_features": REPRESENTATION_DIM,
         "activation": "relu",
     },
@@ -65,22 +65,25 @@ BACKBONE = {
     "training_method": "CIFARDFA",
 }
 
-BACKBONE_PARAMETER_COUNT = 896 + 18496 + 8320 + 1290
+BACKBONE_PARAMETER_COUNT = 896 + 18496 + (1024 * 256 + 256) + (256 * 10 + 10)
 
 TRAINING_DEFAULTS = {
-    "optimizer": "Adam",
+    "optimizer": "AdamW",
     "weight_decay": 1e-4,
     "scheduler": {
         "type": "CosineAnnealingLR",
-        "eta_min": 1e-5,
+        "eta_min": 5e-6,
     },
     "gradient_clipping": {
         "strategy": "layer_wise",
-        "max_norm": 1.0,
+        "max_norm": 0.25,
     },
     "augmentation": "get_train_transform",
     "feedback_initialization": (
         "normal_std_1_over_sqrt_num_classes"
+    ),
+    "checkpoint_selection": (
+        "lowest_validation_cross_entropy_v1"
     ),
 }
 
@@ -119,12 +122,14 @@ def dataset_fingerprint(
             digest.update(name.encode("ascii"))
             digest.update(attribute.encode("ascii"))
             digest.update(str(array.dtype).encode("ascii"))
+
             digest.update(
                 np.asarray(
                     array.shape,
                     dtype=np.int64,
                 ).tobytes()
             )
+
             digest.update(array.tobytes())
 
     return digest.hexdigest()
@@ -258,6 +263,7 @@ def build_metadata(
         "dfa_hidden_size": REPRESENTATION_DIM,
         "classes": NUM_CLASSES,
         "device": str(device),
+
         "scheduler": {
             "type": TRAINING_DEFAULTS["scheduler"]["type"],
             "T_max": int(epochs),
@@ -265,34 +271,47 @@ def build_metadata(
                 TRAINING_DEFAULTS["scheduler"]["eta_min"]
             ),
         },
+
         "gradient_clipping": {
             "strategy": clipping_strategy,
             "max_norm": float(max_grad_norm),
         },
+
         "augmentation": TRAINING_DEFAULTS["augmentation"],
+
         "feedback_initialization": (
             TRAINING_DEFAULTS["feedback_initialization"]
+        ),
+
+        # Correct location for checkpoint selection metadata.
+        "checkpoint_selection": (
+            TRAINING_DEFAULTS["checkpoint_selection"]
         ),
     }
 
     return {
         "representation_version": REPRESENTATION_VERSION,
         "dataset": "CIFAR-10",
+
         "dataset_fingerprint": dataset_fingerprint(
             train_dataset,
             test_dataset,
         ),
+
         "split_protocol": (
             "official_train_stratified_train_validation_holdout_v1"
         ),
+
         "seed": int(seed),
         "validation_fraction": float(validation_fraction),
         "split_indices": indices,
+
         "sample_counts": {
             "train": len(indices["train"]),
             "validation": len(indices["validation"]),
             "test": len(indices["test"]),
         },
+
         "class_counts": {
             "train": make_class_counts(
                 train_labels[indices["train"]]
@@ -302,15 +321,19 @@ def build_metadata(
             ),
             "test": make_class_counts(test_labels),
         },
+
         "backbone": BACKBONE,
         "backbone_parameter_count": BACKBONE_PARAMETER_COUNT,
         "training": training,
         "preprocessing": PREPROCESSING,
+
         "representation_layer": (
-            "relu(fc1(gap(relu(conv2(relu(conv1(image)))))))"
+            "relu(fc1(flatten(avgpool4x4(relu(conv2(relu(conv1(image))))))))"
         ),
+
         "representation_dim": REPRESENTATION_DIM,
         "representation_dtype": "float32",
+
         "run_provenance": collect_run_provenance(str(device)),
     }
 
@@ -344,12 +367,14 @@ def _tensor_digest(data: dict[str, Any]) -> str:
 
         digest.update(key.encode("ascii"))
         digest.update(str(tensor.dtype).encode("ascii"))
+
         digest.update(
             np.asarray(
                 tensor.shape,
                 dtype=np.int64,
             ).tobytes()
         )
+
         digest.update(tensor.numpy().tobytes())
 
     return digest.hexdigest()
@@ -361,6 +386,7 @@ def _compatibility_metadata(
     """Exclude nonessential runtime provenance from cache comparison."""
 
     compatible = dict(metadata)
+
     compatible.pop("run_provenance", None)
 
     training = compatible.get("training")
@@ -436,7 +462,7 @@ def representation_path(
     return (
         Path(output_dir)
         / (
-            f"cifar10_bnn_dfa_v2_seed_{seed}_"
+            f"cifar10_bnn_dfa_v4_seed_{seed}_"
             f"epochs_{epochs}_val_{fraction}.pt"
         )
     )
@@ -459,6 +485,7 @@ def save_representation(
         )
 
     saved = dict(data)
+
     saved["metadata"] = metadata
     saved["representation_sha256"] = _tensor_digest(saved)
 
@@ -483,6 +510,7 @@ def save_representation(
     except Exception:
         if created and path.exists():
             path.unlink()
+
         raise
 
     return saved
@@ -573,6 +601,46 @@ def load_representation(
     if data.get("artifact_id") != expected_id:
         raise ValueError(
             "CIFAR-10 representation artifact identifier is invalid."
+        )
+
+    # Validate checkpoint-selection information.
+    summary = data.get("training_summary")
+
+    if not isinstance(summary, dict):
+        raise ValueError(
+            "v3 artifact is missing training_summary."
+        )
+
+    selected_epoch = summary.get("selected_epoch")
+
+    if (
+        not isinstance(selected_epoch, int)
+        or isinstance(selected_epoch, bool)
+        or not 1 <= selected_epoch <= expected_metadata["training"]["epochs"]
+    ):
+        raise ValueError(
+            "training_summary contains an invalid selected_epoch."
+        )
+
+    selected_loss = summary.get("selected_validation_loss")
+    selected_accuracy = summary.get("selected_validation_accuracy")
+
+    if (
+        not isinstance(selected_loss, (int, float))
+        or not np.isfinite(selected_loss)
+        or selected_loss < 0
+    ):
+        raise ValueError(
+            "training_summary contains an invalid validation loss."
+        )
+
+    if (
+        not isinstance(selected_accuracy, (int, float))
+        or not np.isfinite(selected_accuracy)
+        or not 0 <= selected_accuracy <= 100
+    ):
+        raise ValueError(
+            "training_summary contains an invalid validation accuracy."
         )
 
     indices = expected_metadata["split_indices"]
