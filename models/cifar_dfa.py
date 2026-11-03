@@ -1,74 +1,14 @@
-"""Convolutional Direct Feedback Alignment (DFA) for CIFAR-10 BNN.
+"""Convolutional Direct Feedback Alignment (DFA) for CIFAR-10 BNN."""
 
-Mathematical Formulation:
--------------------------
-In standard backpropagation, errors propagate sequentially:
-    delta_l = (W_{l+1}^T delta_{l+1}) * sigma'(z_l)
-creating a strict backward locking problem.
-
-In Direct Feedback Alignment (Nøkland, 2016; Crafton et al., 2019):
-Every hidden layer receives a direct, fixed random projection of the top-level
-output error vector e = grad_{y_hat} L:
-    delta_l = (e @ B_l) * sigma'(z_l)
-where B_l is a fixed, non-trainable random matrix initialized at the start
-of the experiment.
-
-Feedback Dimensions for the CIFAR-10 BNN Architecture:
-------------------------------------------------------
-Classification error vector:
-    e in R^{B x 10}
-
-1. Conv1 Layer (3 -> 32, stride=2, padding=1, 3x3):
-   Activation shape excluding batch: [32, 16, 16] -> 8,192 elements.
-   Feedback matrix: B_conv1 in R^{10 x 8192}.
-   Local feedback:
-       delta_conv1_flat = e @ B_conv1                    # [B, 8192]
-       delta_conv1 = reshape(delta_conv1_flat, [B, 32, 16, 16]) * (z_conv1 > 0)
-   Local parameter gradients (adjoint of 2D convolution):
-       grad_W_conv1 = conv2d_weight(x_input, W_conv1.shape, delta_conv1, stride=2, padding=1)
-       grad_b_conv1 = sum_{b, h, w} delta_conv1          # [32]
-
-2. Conv2 Layer (32 -> 64, stride=2, padding=1, 3x3):
-   Activation shape excluding batch: [64, 8, 8] -> 4,096 elements.
-   Feedback matrix: B_conv2 in R^{10 x 4096}.
-   Local feedback:
-       delta_conv2_flat = e @ B_conv2                    # [B, 4096]
-       delta_conv2 = reshape(delta_conv2_flat, [B, 64, 8, 8]) * (z_conv2 > 0)
-   Local parameter gradients:
-       grad_W_conv2 = conv2d_weight(a_conv1, W_conv2.shape, delta_conv2, stride=2, padding=1)
-       grad_b_conv2 = sum_{b, h, w} delta_conv2          # [64]
-
-3. Dense Layer (64 -> 128):
-   Activation shape excluding batch: [128] elements.
-   Feedback matrix: B_dense in R^{10 x 128}.
-   Local feedback:
-       delta_dense = (e @ B_dense) * (z_dense > 0)       # [B, 128]
-   Local parameter gradients:
-       grad_W_fc1 = delta_dense^T @ a_gap                # [128, 64]
-       grad_b_fc1 = sum_b delta_dense                    # [128]
-
-4. Output Layer (128 -> 10):
-   Standard loss gradient:
-       grad_W_fc2 = e^T @ a_dense                        # [10, 128]
-       grad_b_fc2 = sum_b e                              # [10]
-
-Crucially:
-- Local hidden layer learning signals are independent of error backpropagation
-  through preceding or subsequent layers.
-- Conv2 gradients do NOT backpropagate into Conv1.
-- Dense gradients do NOT backpropagate into Conv2.
-- Latent weights receive finite local updates, driving the BNN optimization.
-"""
 from __future__ import annotations
 
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 import torch.nn.grad as G
 
 
 class CIFARDFA:
-    """Manages fixed random feedback alignment matrices for CIFAR-10 BNN."""
+    """Manages fixed random feedback alignment matrices for CIFAR-10."""
 
     def __init__(
         self,
@@ -85,36 +25,49 @@ class CIFARDFA:
         self.dense_size = dense_size
         self.device = torch.device(device)
 
-        self.conv1_flat_size = conv1_shape[0] * conv1_shape[1] * conv1_shape[2]  # 8192
-        self.conv2_flat_size = conv2_shape[0] * conv2_shape[1] * conv2_shape[2]  # 4096
+        self.conv1_flat_size = (
+            conv1_shape[0] * conv1_shape[1] * conv1_shape[2]
+        )
+        self.conv2_flat_size = (
+            conv2_shape[0] * conv2_shape[1] * conv2_shape[2]
+        )
 
         generator = None
         if seed is not None:
             generator = torch.Generator(device="cpu").manual_seed(int(seed))
 
-        # Fixed random feedback matrices (never trained, detached)
-        # Scaled by 1/sqrt(fan_in) to keep projection variance stable
-        b_conv1 = torch.randn(
-            (num_classes, self.conv1_flat_size),
-            generator=generator,
-            dtype=torch.float32,
-        ) / (num_classes ** 0.5)
+        scale = num_classes ** 0.5
 
-        b_conv2 = torch.randn(
-            (num_classes, self.conv2_flat_size),
-            generator=generator,
-            dtype=torch.float32,
-        ) / (num_classes ** 0.5)
+        self.feedback_conv1 = (
+            torch.randn(
+                num_classes,
+                self.conv1_flat_size,
+                generator=generator,
+                dtype=torch.float32,
+            ) / scale
+        ).to(self.device)
 
-        b_dense = torch.randn(
-            (num_classes, dense_size),
-            generator=generator,
-            dtype=torch.float32,
-        ) / (num_classes ** 0.5)
+        self.feedback_conv2 = (
+            torch.randn(
+                num_classes,
+                self.conv2_flat_size,
+                generator=generator,
+                dtype=torch.float32,
+            ) / scale
+        ).to(self.device)
 
-        self.feedback_conv1 = b_conv1.to(self.device).requires_grad_(False)
-        self.feedback_conv2 = b_conv2.to(self.device).requires_grad_(False)
-        self.feedback_dense = b_dense.to(self.device).requires_grad_(False)
+        self.feedback_dense = (
+            torch.randn(
+                num_classes,
+                dense_size,
+                generator=generator,
+                dtype=torch.float32,
+            ) / scale
+        ).to(self.device)
+
+        self.feedback_conv1.requires_grad_(False)
+        self.feedback_conv2.requires_grad_(False)
+        self.feedback_dense.requires_grad_(False)
 
     def compute_local_gradients(
         self,
@@ -123,19 +76,8 @@ class CIFARDFA:
         labels: torch.Tensor,
         forward_intermediates: tuple,
     ) -> dict[str, torch.Tensor]:
-        """Compute layer-wise DFA parameter gradients without backpropagation.
+        """Compute local DFA gradients without backpropagating through layers."""
 
-        Parameters
-        ----------
-        model: CIFAR_BNN instance
-        x_input: [B, 3, 32, 32] raw input image tensor
-        labels: [B] integer class labels
-        forward_intermediates: tuple returned by model.forward_with_intermediates(x_input)
-
-        Returns
-        -------
-        Dictionary mapping parameter names to their manually calculated local gradients.
-        """
         (
             outputs,
             conv1_pre,
@@ -149,25 +91,38 @@ class CIFARDFA:
 
         batch_size = labels.size(0)
 
-        # 1. Output error: exact gradient of CrossEntropyLoss w.r.t logits
-        # dL/d(outputs) = (softmax(outputs) - one_hot(labels)) / batch_size
+        if outputs.ndim != 2 or outputs.shape[1] != self.num_classes:
+            raise ValueError("Output tensor has an incompatible shape.")
+
+        if outputs.device != self.device:
+            raise ValueError("Model outputs and DFA feedback are on different devices.")
+
+        if labels.device != outputs.device:
+            raise ValueError("Labels and model outputs must be on the same device.")
+
+        if not torch.isfinite(outputs).all():
+            raise ValueError("Model outputs contain non-finite values.")
+
         output_error = CIFARDFAFunction.output_error(outputs, labels)
 
-        # 2. Output layer (fc2) gradients (exact)
+        # Output layer: exact cross-entropy gradient.
         grad_fc2_weight = output_error.T @ dense_act
         grad_fc2_bias = output_error.sum(dim=0)
 
-        # 3. Dense layer (fc1) DFA feedback and local gradients
+        # Dense hidden layer: direct feedback.
         dense_error_signal = output_error @ self.feedback_dense
-        dense_delta = dense_error_signal * (dense_pre > 0).float()
+        dense_delta = dense_error_signal * (dense_pre > 0).to(dense_pre.dtype)
+
         grad_fc1_weight = dense_delta.T @ gap_act
         grad_fc1_bias = dense_delta.sum(dim=0)
 
-        # 4. Conv2 layer DFA feedback and local gradients
+        # Second convolutional layer: direct feedback.
         conv2_error_signal_flat = output_error @ self.feedback_conv2
-        conv2_delta = conv2_error_signal_flat.view(
-            batch_size, *self.conv2_shape
-        ) * (conv2_pre > 0).float()
+
+        conv2_delta = conv2_error_signal_flat.reshape(
+            batch_size,
+            *self.conv2_shape,
+        ) * (conv2_pre > 0).to(conv2_pre.dtype)
 
         grad_conv2_weight = G.conv2d_weight(
             conv1_act,
@@ -176,13 +131,16 @@ class CIFARDFA:
             stride=model.conv2.stride,
             padding=model.conv2.padding,
         )
+
         grad_conv2_bias = conv2_delta.sum(dim=(0, 2, 3))
 
-        # 5. Conv1 layer DFA feedback and local gradients
+        # First convolutional layer: direct feedback.
         conv1_error_signal_flat = output_error @ self.feedback_conv1
-        conv1_delta = conv1_error_signal_flat.view(
-            batch_size, *self.conv1_shape
-        ) * (conv1_pre > 0).float()
+
+        conv1_delta = conv1_error_signal_flat.reshape(
+            batch_size,
+            *self.conv1_shape,
+        ) * (conv1_pre > 0).to(conv1_pre.dtype)
 
         grad_conv1_weight = G.conv2d_weight(
             x_input,
@@ -191,9 +149,10 @@ class CIFARDFA:
             stride=model.conv1.stride,
             padding=model.conv1.padding,
         )
+
         grad_conv1_bias = conv1_delta.sum(dim=(0, 2, 3))
 
-        return {
+        gradients = {
             "conv1.weight": grad_conv1_weight,
             "conv1.bias": grad_conv1_bias,
             "conv2.weight": grad_conv2_weight,
@@ -204,33 +163,82 @@ class CIFARDFA:
             "fc2.bias": grad_fc2_bias,
         }
 
+        for name, grad in gradients.items():
+            if not torch.isfinite(grad).all():
+                raise FloatingPointError(
+                    f"Non-finite DFA gradient detected: {name}"
+                )
+
+        return gradients
+
     def apply_gradients(
         self,
         model: nn.Module,
         gradients: dict[str, torch.Tensor],
-    ):
-        """Assign calculated local gradients directly to model parameter .grad attributes."""
-        model.conv1.weight.grad = gradients["conv1.weight"]
-        model.conv1.bias.grad = gradients["conv1.bias"]
-        model.conv2.weight.grad = gradients["conv2.weight"]
-        model.conv2.bias.grad = gradients["conv2.bias"]
-        model.fc1.weight.grad = gradients["fc1.weight"]
-        model.fc1.bias.grad = gradients["fc1.bias"]
-        model.fc2.weight.grad = gradients["fc2.weight"]
-        model.fc2.bias.grad = gradients["fc2.bias"]
+    ) -> None:
+        """Assign manually calculated DFA gradients to model parameters."""
+
+        parameters = {
+            "conv1.weight": model.conv1.weight,
+            "conv1.bias": model.conv1.bias,
+            "conv2.weight": model.conv2.weight,
+            "conv2.bias": model.conv2.bias,
+            "fc1.weight": model.fc1.weight,
+            "fc1.bias": model.fc1.bias,
+            "fc2.weight": model.fc2.weight,
+            "fc2.bias": model.fc2.bias,
+        }
+
+        if gradients.keys() != parameters.keys():
+            raise ValueError("DFA gradient keys do not match model parameters.")
+
+        for name, parameter in parameters.items():
+            gradient = gradients[name]
+
+            if gradient.shape != parameter.shape:
+                raise ValueError(
+                    f"Gradient shape mismatch for {name}: "
+                    f"{gradient.shape} vs {parameter.shape}"
+                )
+
+            if gradient.device != parameter.device:
+                raise ValueError(
+                    f"Gradient device mismatch for {name}."
+                )
+
+            parameter.grad = gradient.detach().clone()
 
 
 class CIFARDFAFunction:
-    """Utility functions for computing DFA error vectors."""
+    """Utility functions for computing DFA output error vectors."""
 
     @staticmethod
-    def output_error(outputs: torch.Tensor, labels: torch.Tensor) -> torch.Tensor:
-        """Compute the derivative of Cross-Entropy loss w.r.t unnormalized logits.
+    def output_error(
+        outputs: torch.Tensor,
+        labels: torch.Tensor,
+    ) -> torch.Tensor:
+        """Calculate the mean cross-entropy gradient with respect to logits."""
 
-        For softmax probabilities p and 1-hot targets y:
-            dL / d(logits) = (p - y) / N
-        """
-        probs = torch.softmax(outputs, dim=1)
-        targets = torch.zeros_like(probs)
+        if outputs.ndim != 2:
+            raise ValueError("Outputs must be a two-dimensional tensor.")
+
+        if labels.ndim != 1 or labels.size(0) != outputs.size(0):
+            raise ValueError("Labels must have shape [batch_size].")
+
+        if labels.dtype != torch.long:
+            labels = labels.long()
+
+        if labels.device != outputs.device:
+            raise ValueError("Labels and outputs must share the same device.")
+
+        if labels.numel() and (
+            labels.min() < 0 or labels.max() >= outputs.size(1)
+        ):
+            raise ValueError("Labels contain invalid class indices.")
+
+        probabilities = torch.softmax(outputs, dim=1)
+
+        targets = torch.zeros_like(probabilities)
         targets.scatter_(1, labels.unsqueeze(1), 1.0)
-        return (probs - targets) / labels.size(0)
+
+        return (probabilities - targets) / labels.size(0)

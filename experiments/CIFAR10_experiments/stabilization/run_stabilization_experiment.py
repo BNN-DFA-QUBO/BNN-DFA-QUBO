@@ -32,7 +32,7 @@ from utils.CIFAR10.data import (
     get_device,
 )
 from utils.MNIST.seed import set_seed
-from experiments.CIFAR10_experiments.cifar_bnn_dfa import collect_hidden_features
+from experiments.CIFAR10_experiments.cifar_bnn_dfa import collect_hidden_features, main
 from experiments.CIFAR10_experiments.cifar_dfa_least_squares import fit_and_evaluate_ridge
 from experiments.CIFAR10_experiments.cifar_dfa_binarized_ls import evaluate_binarized_head
 from experiments.CIFAR10_experiments.cifar_dfa_direct_binary import evaluate_direct_binary_head as eval_direct_base
@@ -43,12 +43,12 @@ from experiments.CIFAR10_experiments.cifar_dfa_qubo import evaluate_qubo
 from utils.run_provenance import collect_run_provenance, stable_run_id
 
 STAB_DATA_DIR = Path("data/cifar10_stabilization")
-STAB_REP_DIR = STAB_DATA_DIR / "representations"
-STAB_RESULTS_DIR = STAB_DATA_DIR / "results"
+
+STAB_REP_DIR = STAB_DATA_DIR / "representations_ep5_standardized"
+STAB_RESULTS_DIR = STAB_DATA_DIR / "results_ep5_standardized"
+
 STAB_RESULTS_CSV = STAB_RESULTS_DIR / "cifar10_stabilization_results.csv"
 PROGRESSION_CSV = STAB_RESULTS_DIR / "cifar10_representation_progression.csv"
-
-
 class CIFAR_BNN_BN(nn.Module):
     """Architectural variant with Batch Normalization."""
     def __init__(self):
@@ -156,7 +156,9 @@ def train_stabilized_seed(
         "bnn_val_loss": 2.3026, "bnn_val_acc": 10.0,
     }]
 
-    check_epochs = {1, 2, 5, 10, 20}
+    check_epochs = {e for e in (1, 2, 5, 10, 20) if e <= epochs}
+    if epochs not in check_epochs:
+        check_epochs.add(epochs)
     current_epoch = 0
     t0_training = time.perf_counter()
 
@@ -225,116 +227,295 @@ def train_stabilized_seed(
 
     total_training_sec = time.perf_counter() - t0_training
 
-    # Save frozen representation artifact at epoch 20
-    STAB_REP_DIR.mkdir(parents=True, exist_ok=True)
-    rep_save_path = STAB_REP_DIR / f"rep_{config}_seed_{seed}_ep20.pt"
-    torch.save({
-        "H_train": H_tr.cpu(), "y_train": y_tr.cpu(),
-        "H_validation": H_val.cpu(), "y_validation": y_val.cpu(),
-        "H_test": H_te.cpu(), "y_test": y_te.cpu(),
-        "config": config, "seed": seed, "epochs": epochs,
-        "training_time_sec": total_training_sec,
-    }, rep_save_path)
-    print(f"[SAVED] Saved stabilized representation to {rep_save_path}")
+        # ---------------------------------------------------------
+    # Standardize frozen features using TRAINING statistics only
+    # ---------------------------------------------------------
+    H_mean = H_tr.float().mean(dim=0, keepdim=True)
+    H_std = H_tr.float().std(dim=0, unbiased=False, keepdim=True)
 
-    # Now evaluate all 5 classifier heads on this final frozen representation
-    print(f"\nEvaluating all 5 heads on stabilized representation (Seed {seed})...")
+    # Avoid division by zero for constant features
+    H_std = H_std.clamp_min(1e-6)
+
+    # Apply the same training-derived statistics to all splits
+    H_tr_std = (H_tr.float() - H_mean) / H_std
+    H_val_std = (H_val.float() - H_mean) / H_std
+    H_te_std = (H_te.float() - H_mean) / H_std
+
+    print(
+        "\n[STANDARDIZATION] "
+        f"Train mean={H_tr_std.mean().item():.4f}, "
+        f"Train std={H_tr_std.std().item():.4f}"
+    )
+
+    # ---------------------------------------------------------
+    # Save original frozen features and normalization statistics
+    # ---------------------------------------------------------
+    STAB_REP_DIR.mkdir(parents=True, exist_ok=True)
+
+    rep_save_path = STAB_REP_DIR / (
+        f"rep_{config}_seed_{seed}_ep{current_epoch}.pt"
+    )
+
+    torch.save({
+        "H_train": H_tr.cpu(),
+        "y_train": y_tr.cpu(),
+        "H_validation": H_val.cpu(),
+        "y_validation": y_val.cpu(),
+        "H_test": H_te.cpu(),
+        "y_test": y_te.cpu(),
+        "feature_mean": H_mean.cpu(),
+        "feature_std": H_std.cpu(),
+        "config": config,
+        "seed": seed,
+        "epochs": epochs,
+        "training_time_sec": total_training_sec,
+        "standardization": "training_feature_mean_std",
+    }, rep_save_path)
+
+    print(f"[SAVED] Saved representation to {rep_save_path}")
+
+    # ---------------------------------------------------------
+    # Evaluate all six classifier heads on standardized features
+    # ---------------------------------------------------------
+    print(
+        f"\nEvaluating all 6 heads on STANDARDIZED "
+        f"representation (Seed {seed})..."
+    )
+
     head_records = []
 
-    # 1. Real LS
-    w_ridge, acc_ridge, t_ridge = fit_and_evaluate_ridge(H_tr, y_tr, H_val, y_val, H_te, y_te)
+    # 1. Real Least Squares
+    w_ridge, acc_ridge, t_ridge = fit_and_evaluate_ridge(
+        H_tr_std, y_tr,
+        H_val_std, y_val,
+        H_te_std, y_te
+    )
+
     head_records.append({
-        "config": config, "seed": seed, "method": "Real Least Squares",
-        "train_acc": acc_ridge["train"], "val_acc": acc_ridge["validation"], "test_acc": acc_ridge["test"],
+        "config": config,
+        "seed": seed,
+        "method": "Real Least Squares",
+        "train_acc": acc_ridge["train"],
+        "val_acc": acc_ridge["validation"],
+        "test_acc": acc_ridge["test"],
         "fit_time_sec": t_ridge,
     })
 
-    # 2. Binarized LS
-    _, acc_bin, t_bin = evaluate_binarized_head(H_tr, y_tr, H_val, y_val, H_te, y_te, w_ridge)
+    # 2. Binarized Least Squares
+    _, acc_bin, t_bin = evaluate_binarized_head(
+        H_tr_std, y_tr,
+        H_val_std, y_val,
+        H_te_std, y_te,
+        w_ridge
+    )
+
     head_records.append({
-        "config": config, "seed": seed, "method": "Binarized Least Squares",
-        "train_acc": acc_bin["train"], "val_acc": acc_bin["validation"], "test_acc": acc_bin["test"],
+        "config": config,
+        "seed": seed,
+        "method": "Binarized Least Squares",
+        "train_acc": acc_bin["train"],
+        "val_acc": acc_bin["validation"],
+        "test_acc": acc_bin["test"],
         "fit_time_sec": t_bin,
     })
 
-    # 3. Direct Binary Baseline (Original Unscaled)
-    _, acc_dir_base, t_dir_base = eval_direct_base(H_tr, y_tr, H_val, y_val, H_te, y_te, seed=seed)
+    # 3. Direct Binary Baseline
+    _, acc_dir_base, t_dir_base = eval_direct_base(
+        H_tr_std, y_tr,
+        H_val_std, y_val,
+        H_te_std, y_te,
+        seed=seed
+    )
+
     head_records.append({
-        "config": config, "seed": seed, "method": "Direct Binary (Baseline)",
-        "train_acc": acc_dir_base["train"], "val_acc": acc_dir_base["validation"], "test_acc": acc_dir_base["test"],
+        "config": config,
+        "seed": seed,
+        "method": "Direct Binary (Baseline)",
+        "train_acc": acc_dir_base["train"],
+        "val_acc": acc_dir_base["validation"],
+        "test_acc": acc_dir_base["test"],
         "fit_time_sec": t_dir_base,
     })
 
-    # 4. Direct Binary Stabilized (Scale/Bias Refit)
-    _, acc_dir_stab, t_dir_stab = eval_direct_stab(H_tr, y_tr, H_val, y_val, H_te, y_te, seed=seed)
+    # 4. Direct Binary Stabilized
+    _, acc_dir_stab, t_dir_stab = eval_direct_stab(
+        H_tr_std, y_tr,
+        H_val_std, y_val,
+        H_te_std, y_te,
+        seed=seed
+    )
+
     head_records.append({
-        "config": config, "seed": seed, "method": "Direct Binary (Stabilized)",
-        "train_acc": acc_dir_stab["train"], "val_acc": acc_dir_stab["validation"], "test_acc": acc_dir_stab["test"],
+        "config": config,
+        "seed": seed,
+        "method": "Direct Binary (Stabilized)",
+        "train_acc": acc_dir_stab["train"],
+        "val_acc": acc_dir_stab["validation"],
+        "test_acc": acc_dir_stab["test"],
         "fit_time_sec": t_dir_stab,
     })
 
     # 5. STE Binary
-    _, acc_ste, t_ste = evaluate_ste_head(H_tr, y_tr, H_val, y_val, H_te, y_te, seed=seed)
+    _, acc_ste, t_ste = evaluate_ste_head(
+        H_tr_std, y_tr,
+        H_val_std, y_val,
+        H_te_std, y_te,
+        seed=seed
+    )
+
     head_records.append({
-        "config": config, "seed": seed, "method": "STE Binary",
-        "train_acc": acc_ste["train"], "val_acc": acc_ste["validation"], "test_acc": acc_ste["test"],
+        "config": config,
+        "seed": seed,
+        "method": "STE Binary",
+        "train_acc": acc_ste["train"],
+        "val_acc": acc_ste["validation"],
+        "test_acc": acc_ste["test"],
         "fit_time_sec": t_ste,
     })
 
-    # 6. QUBO Binary (Validation Grid Tuned)
-    winner, _ = tune_from_representations(H_tr, y_tr, H_val, y_val, seed=seed)
-    qubo_test = evaluate_qubo(H_te, y_te, winner["_weights"], winner["_scales"], winner["_bias"])
-    qubo_train = evaluate_qubo(H_tr, y_tr, winner["_weights"], winner["_scales"], winner["_bias"])
+    # 6. QUBO Binary: tune using training and validation only
+    winner, _ = tune_from_representations(
+        H_tr_std, y_tr,
+        H_val_std, y_val,
+        seed=seed
+    )
+
+    qubo_test = evaluate_qubo(
+        H_te_std, y_te,
+        winner["_weights"],
+        winner["_scales"],
+        winner["_bias"]
+    )
+
+    qubo_train = evaluate_qubo(
+        H_tr_std, y_tr,
+        winner["_weights"],
+        winner["_scales"],
+        winner["_bias"]
+    )
+
     head_records.append({
-        "config": config, "seed": seed, "method": "QUBO Binary",
-        "train_acc": qubo_train, "val_acc": winner["validation_accuracy"], "test_acc": qubo_test,
+        "config": config,
+        "seed": seed,
+        "method": "QUBO Binary",
+        "train_acc": qubo_train,
+        "val_acc": winner["validation_accuracy"],
+        "test_acc": qubo_test,
         "fit_time_sec": winner["tuning_total_seconds"],
-        "notes": f"reads={winner['num_reads']}, sweeps={winner['num_sweeps']}, mult={winner['scale_multiplier']}",
+        "notes": (
+            f"standardized; reads={winner['num_reads']}, "
+            f"sweeps={winner['num_sweeps']}, "
+            f"mult={winner['scale_multiplier']}"
+        ),
     })
 
     return {
         "progression": progression_records,
         "heads": head_records,
     }
-
-
 def main():
-    parser = argparse.ArgumentParser(description="Run CIFAR-10 BNN-DFA stabilization experiment.")
-    parser.add_argument("--config", type=str, default="opt_control", choices=["opt_control", "latent_clamp", "batch_norm"])
-    parser.add_argument("--seeds", nargs="+", type=int, default=[42, 123, 456, 789, 999])
-    parser.add_argument("--single-seed", type=int, default=None)
-    parser.add_argument("--epochs", type=int, default=20)
+    parser = argparse.ArgumentParser(
+        description="Run CIFAR-10 BNN-DFA stabilization experiment."
+    )
+
+    parser.add_argument(
+        "--config",
+        type=str,
+        default="opt_control",
+        choices=["opt_control", "latent_clamp", "batch_norm"],
+    )
+
+    parser.add_argument(
+        "--seeds",
+        nargs="+",
+        type=int,
+        default=[42, 123, 456, 789, 999],
+    )
+
+    parser.add_argument(
+        "--single-seed",
+        type=int,
+        default=None,
+    )
+
+    parser.add_argument(
+        "--epochs",
+        type=int,
+        default=20,
+    )
+
     args = parser.parse_args()
 
-    seeds = [args.single_seed] if args.single_seed is not None else args.seeds
+    seeds = (
+        [args.single_seed]
+        if args.single_seed is not None
+        else args.seeds
+    )
+
     STAB_RESULTS_DIR.mkdir(parents=True, exist_ok=True)
 
     all_progression = []
     all_heads = []
 
     for seed in seeds:
-        res = train_stabilized_seed(seed=seed, config=args.config, epochs=args.epochs)
+        res = train_stabilized_seed(
+            seed=seed,
+            config=args.config,
+            epochs=args.epochs,
+        )
+
         all_progression.extend(res["progression"])
         all_heads.extend(res["heads"])
 
-    # Append to progression CSV
+    # ---------------------------------------------------------
+    # Append progression records to CSV
+    # ---------------------------------------------------------
     df_prog = pd.DataFrame(all_progression)
+
     if PROGRESSION_CSV.exists():
         df_old_prog = pd.read_csv(PROGRESSION_CSV)
-        df_prog = pd.concat([df_old_prog, df_prog], ignore_index=True).drop_duplicates(subset=["config", "seed", "epoch"])
+
+        df_prog = pd.concat(
+            [df_old_prog, df_prog],
+            ignore_index=True,
+        ).drop_duplicates(
+            subset=["config", "seed", "epoch"],
+            keep="last",
+        )
+
     df_prog.to_csv(PROGRESSION_CSV, index=False)
+
     print(f"\n[UPDATED] Progression records written to {PROGRESSION_CSV}")
 
-    # Append to results CSV
+    # ---------------------------------------------------------
+    # Append classifier-head results to CSV
+    # ---------------------------------------------------------
     df_heads = pd.DataFrame(all_heads)
+
     if STAB_RESULTS_CSV.exists():
         df_old_heads = pd.read_csv(STAB_RESULTS_CSV)
-        df_heads = pd.concat([df_old_heads, df_heads], ignore_index=True).drop_duplicates(subset=["config", "seed", "method"])
+
+        df_heads = pd.concat(
+            [df_old_heads, df_heads],
+            ignore_index=True,
+        ).drop_duplicates(
+            subset=["config", "seed", "method"],
+            keep="last",
+        )
+
     df_heads.to_csv(STAB_RESULTS_CSV, index=False)
+
     print(f"[UPDATED] Head results written to {STAB_RESULTS_CSV}")
 
-    # Summary table
-    summary = df_heads.groupby(["config", "method"])["test_acc"].agg(["count", "mean", "std", "min", "max"]).reset_index()
+    # ---------------------------------------------------------
+    # Display summary
+    # ---------------------------------------------------------
+    summary = (
+        df_heads.groupby(["config", "method"])["test_acc"]
+        .agg(["count", "mean", "std", "min", "max"])
+        .reset_index()
+    )
+
     print("\n" + "=" * 80)
     print(f"Summary for Config: {args.config}")
     print("-" * 80)
