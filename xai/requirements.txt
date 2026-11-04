@@ -1,0 +1,4 @@
+# XAI dependencies. Install in the project's active .venv:
+# python -m pip install -r xai/requirements.txt
+shap>=0.45,<0.55
+lime==0.2.0.1
