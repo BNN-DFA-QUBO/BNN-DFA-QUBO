@@ -283,7 +283,11 @@ def run_xai_experiment(dataset: str, method: str, config: XAIConfig | None = Non
     manifest = {
         "dataset": dataset, "method": method, "seed": config.seed,
         "created_utc": started.isoformat(), "finished_utc": datetime.now(timezone.utc).isoformat(),
-        "explanation_scope": "classifier head over frozen BNN-DFA hidden representations",
+        "explanation_scope": (
+            "classifier head over frozen ResNet18 512-dimensional penultimate features"
+            if dataset == "resnet18_cifar10"
+            else "classifier head over frozen BNN-DFA hidden representations"
+    ),
         "explanation_target": "predicted_class_vs_strongest_competitor_score_margin; continuous model decision score rather than saturated probability",
         "not_explained": "raw pixels or raw input columns; attributions are for latent hidden features",
         "representation_path": rep.representation_path,

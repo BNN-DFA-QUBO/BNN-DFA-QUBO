@@ -17,7 +17,7 @@ METRICS = [
 
 def main():
     p = argparse.ArgumentParser(description="Aggregate XAI runs by dataset, method and seed.")
-    p.add_argument("--datasets", nargs="+", choices=["bank", "mnist", "cifar10", "stroke"], required=True)
+    p.add_argument("--datasets", nargs="+", choices=["bank", "mnist", "cifar10", "stroke", "resnet18_cifar10"], required=True)
     p.add_argument("--seeds", nargs="+", type=int, required=True)
     p.add_argument("--input-dir", type=Path, default=Path("data/xai_results"))
     p.add_argument("--output-dir", type=Path, default=Path("data/xai_results/aggregated"))
